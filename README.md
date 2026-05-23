@@ -1968,7 +1968,7 @@ Our structured feature sequencing framework for multimodal learning with image a
 
 ## DynaTab
 
-Our more recent work on learned feature ordering for high-dimensional tabular data:
+One of our older works on learned feature ordering for high-dimensional tabular data:
 
 - **DynaTab: Dynamic Feature Ordering as Neural Rewiring for High-Dimensional Tabular Data**
 
