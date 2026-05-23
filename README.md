@@ -491,3 +491,418 @@ Users mainly need to provide a clean numeric feature matrix and a target column.
 - The first TabPFN run may download the required checkpoint from Hugging Face.
 - GPU is recommended for faster experiments, but some components can fall back to CPU.
 - Runtime and numerical results may vary slightly across hardware configurations.
+
+
+## Example Usage
+
+Below is a minimal example showing how to train **GOTabPFN**:
+
+### Example 1: Binary Classification with Fixed GOTabPFN Hyperparameters
+
+This example runs GOTabPFN on a binary-classification CSV dataset using fixed GO-LR and NSC-pSP hyperparameters. The dataset should contain numeric feature columns and one target column.
+
+```python
+import numpy as np
+import pandas as pd
+import torch
+
+from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+
+from gotabpfn import GraphFeatureOrdering, pidf_segpca, TabPFN25Head, TabPFN25Config
+
+# -----------------------
+# User settings
+# -----------------------
+DATA_FILE = "coloncancer_encoded.csv" # change your dataset file name
+TARGET_COL = "label" # change your dataset target column
+SEED = 42
+
+# Fixed GOTabPFN hyperparameters
+GO_METRIC = "euclidean"
+GO_NUM_CLUSTERS = 10
+GO_REFINE_PASSES = 3
+GO_DIRECTION_SELECT = True
+
+NSC_SEGMENTATION = "equal_mass"
+NSC_M_RULE = "idf"
+NSC_TAU = 0.99
+NSC_GAMMA = 1.7570143129240916
+NSC_BETA = 0.2244046472232107
+NSC_MMIN = 64
+NSC_MMAX = 384
+NSC_LMIN = 16
+ASSUME_STANDARDIZED = False
+
+TABPFN_SEED = 42
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# -----------------------
+# Load and preprocess data
+# -----------------------
+df = pd.read_csv(DATA_FILE)
+
+y_raw = df[TARGET_COL].astype(str).fillna("missing_target")
+X_df = df.drop(columns=[TARGET_COL])
+
+# Keep numeric features only
+X_df = X_df.select_dtypes(include=[np.number])
+X_df = X_df.apply(pd.to_numeric, errors="coerce")
+X_df = X_df.fillna(X_df.median(numeric_only=True)).fillna(0.0)
+
+# Encode labels
+le = LabelEncoder()
+y = le.fit_transform(y_raw).astype(np.int64)
+
+# Standardize features
+scaler = StandardScaler()
+X = scaler.fit_transform(X_df.values).astype(np.float32)
+
+# -----------------------
+# Learn GO-LR feature ordering once
+# -----------------------
+go = GraphFeatureOrdering(
+    num_clusters=GO_NUM_CLUSTERS,
+    metric=GO_METRIC,
+    refine=True,
+    direction_select=GO_DIRECTION_SELECT,
+    refine_passes=GO_REFINE_PASSES,
+)
+
+try:
+    Pi_star, _, _, _ = go.fit(
+        X,
+        seed=SEED,
+        deterministic=True,
+        use_cpu_kmeans=False,
+    )
+except Exception:
+    Pi_star, _, _, _ = go.fit(
+        X,
+        seed=SEED,
+        deterministic=True,
+        use_cpu_kmeans=True,
+    )
+
+Pi_star = list(map(int, Pi_star))
+
+# -----------------------
+# 5x5 cross-validation
+# -----------------------
+rkf = RepeatedStratifiedKFold(
+    n_splits=5,
+    n_repeats=5,
+    random_state=SEED,
+)
+
+head_cfg = TabPFN25Config(
+    task_type="binary",
+    num_classes=2,
+    device=DEVICE,
+    random_state=TABPFN_SEED,
+)
+
+accs, f1s, aucs = [], [], []
+
+for fold_id, (tr_idx, va_idx) in enumerate(rkf.split(X, y), start=1):
+    X_tr, X_va = X[tr_idx], X[va_idx]
+    y_tr, y_va = y[tr_idx], y[va_idx]
+
+    nsc = pidf_segpca(
+        segmentation=NSC_SEGMENTATION,
+        l_min=NSC_LMIN,
+        m_rule=NSC_M_RULE,
+        gamma=NSC_GAMMA,
+        beta=NSC_BETA,
+        tau=NSC_TAU,
+        M_min=NSC_MMIN,
+        M_max=NSC_MMAX,
+        assume_standardized=ASSUME_STANDARDIZED,
+        device=DEVICE,
+    )
+
+    X_tr_t = torch.from_numpy(X_tr)
+
+    nsc.configure(
+        Pi_star=Pi_star,
+        X_train=X_tr_t,
+        tau=NSC_TAU,
+    )
+
+    Z_tr = nsc.compress(X_tr_t, mode="flatten").cpu().numpy()
+    Z_va = nsc.compress(torch.from_numpy(X_va), mode="flatten").cpu().numpy()
+
+    head = TabPFN25Head(head_cfg)
+    head.fit(Z_tr, y_tr)
+
+    P = head.predict_proba(Z_va)
+    pred = np.argmax(P, axis=1)
+
+    acc = accuracy_score(y_va, pred)
+    f1 = f1_score(y_va, pred, average="macro")
+    auc = roc_auc_score(y_va, P[:, 1])
+
+    accs.append(acc)
+    f1s.append(f1)
+    aucs.append(auc)
+
+    print(f"Fold {fold_id:02d}: ACC={acc:.4f}, F1={f1:.4f}, AUC={auc:.4f}")
+
+print("\nFinal 5x5 CV results")
+print(f"Accuracy : {np.mean(accs):.4f} ± {np.std(accs, ddof=1):.4f}")
+print(f"Macro-F1 : {np.mean(f1s):.4f} ± {np.std(f1s, ddof=1):.4f}")
+print(f"AUC      : {np.mean(aucs):.4f} ± {np.std(aucs, ddof=1):.4f}")
+```
+
+
+
+### Binary classification with Optuna hyperparameter tuning
+
+This example tunes GOTabPFN hyperparameters using Optuna. For each trial, GO-LR learns one feature ordering on the full training matrix, then NSC-pSP and TabPFN-2.5 are evaluated using repeated stratified cross-validation.
+
+```python
+import gc
+import random
+import numpy as np
+import pandas as pd
+import torch
+import optuna
+
+from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import accuracy_score
+
+from gotabpfn import GraphFeatureOrdering, pidf_segpca, TabPFN25Head, TabPFN25Config
+
+# -----------------------
+# User settings
+# -----------------------
+DATA_FILE = "coloncancer_encoded.csv"
+TARGET_COL = "label"
+SEED = 42
+N_TRIALS = 50
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# -----------------------
+# Utilities
+# -----------------------
+def seed_everything(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def cleanup_cuda():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def compute_deltas_adjacent_corr(X_tr, Pi_star, eps=1e-12):
+    X_t = torch.from_numpy(X_tr).float()
+    perm = torch.tensor(Pi_star, dtype=torch.long)
+
+    Xp = X_t[:, perm]
+    Xc = Xp - Xp.mean(dim=0, keepdim=True)
+    std = Xc.std(dim=0, unbiased=False, keepdim=True).clamp_min(eps)
+    Z = Xc / std
+
+    corr = (Z[:, :-1] * Z[:, 1:]).mean(dim=0)
+    return (1.0 - corr.abs()).cpu()
+
+
+# -----------------------
+# Load and preprocess data
+# -----------------------
+seed_everything(SEED)
+
+df = pd.read_csv(DATA_FILE)
+
+y_raw = df[TARGET_COL].astype(str).fillna("missing_target")
+X_df = df.drop(columns=[TARGET_COL])
+
+# Keep numeric features only
+X_df = X_df.select_dtypes(include=[np.number])
+X_df = X_df.apply(pd.to_numeric, errors="coerce")
+X_df = X_df.fillna(X_df.median(numeric_only=True)).fillna(0.0)
+
+le = LabelEncoder()
+y = le.fit_transform(y_raw).astype(np.int64)
+
+scaler = StandardScaler()
+X = scaler.fit_transform(X_df.values).astype(np.float32)
+
+rkf = RepeatedStratifiedKFold(
+    n_splits=5,
+    n_repeats=5,
+    random_state=SEED,
+)
+
+# -----------------------
+# Optuna objective
+# -----------------------
+def objective(trial):
+    seed_everything(SEED)
+
+    # GO-LR hyperparameters
+    go_metric = trial.suggest_categorical(
+        "go_metric",
+        ["correlation", "cosine", "manhattan", "euclidean", "kl_divergence"],
+    )
+    go_num_clusters = trial.suggest_int("go_num_clusters", 4, 12)
+    go_refine_passes = trial.suggest_int("go_refine_passes", 1, 3)
+    go_direction_select = trial.suggest_categorical(
+        "go_direction_select",
+        [True, False],
+    )
+
+    # NSC-pSP hyperparameters
+    nsc_segmentation = trial.suggest_categorical(
+        "nsc_segmentation",
+        ["uniform", "largest_jump", "equal_mass"],
+    )
+    nsc_m_rule = trial.suggest_categorical(
+        "nsc_m_rule",
+        ["default", "idf", "gamma"],
+    )
+    nsc_tau = trial.suggest_categorical("nsc_tau", [0.95, 0.99, 0.9975])
+    nsc_gamma = trial.suggest_float("nsc_gamma", 1.0, 3.0)
+    nsc_beta = trial.suggest_float("nsc_beta", 0.0, 0.9)
+    nsc_Mmin = trial.suggest_categorical("nsc_Mmin", [16, 32, 48, 64])
+    nsc_Mmax = trial.suggest_categorical("nsc_Mmax", [128, 256, 384, 512, 640])
+    nsc_lmin = trial.suggest_categorical("nsc_lmin", [8, 12, 16])
+    assume_standardized = trial.suggest_categorical(
+        "assume_standardized",
+        [True, False],
+    )
+
+    tabpfn_seed = trial.suggest_categorical(
+        "tabpfn_seed",
+        [0, 1, 2, 3, 4, 42],
+    )
+
+    # Learn GO-LR ordering once per trial
+    go = GraphFeatureOrdering(
+        num_clusters=go_num_clusters,
+        metric=go_metric,
+        refine=True,
+        direction_select=go_direction_select,
+        refine_passes=go_refine_passes,
+    )
+
+    try:
+        Pi_star, _, _, _ = go.fit(
+            X,
+            seed=SEED,
+            deterministic=True,
+            use_cpu_kmeans=False,
+        )
+    except Exception:
+        cleanup_cuda()
+        Pi_star, _, _, _ = go.fit(
+            X,
+            seed=SEED,
+            deterministic=True,
+            use_cpu_kmeans=True,
+        )
+
+    Pi_star = list(map(int, Pi_star))
+
+    head_cfg = TabPFN25Config(
+        task_type="binary",
+        num_classes=2,
+        device=DEVICE,
+        random_state=tabpfn_seed,
+    )
+
+    accs = []
+
+    for fold_id, (tr_idx, va_idx) in enumerate(rkf.split(X, y), start=1):
+        X_tr, X_va = X[tr_idx], X[va_idx]
+        y_tr, y_va = y[tr_idx], y[va_idx]
+
+        nsc = pidf_segpca(
+            segmentation=nsc_segmentation,
+            l_min=nsc_lmin,
+            m_rule=nsc_m_rule,
+            gamma=nsc_gamma,
+            beta=nsc_beta,
+            tau=nsc_tau,
+            M_min=nsc_Mmin,
+            M_max=nsc_Mmax,
+            assume_standardized=assume_standardized,
+            device=DEVICE,
+        )
+
+        deltas = None
+        if nsc_segmentation != "uniform":
+            deltas = compute_deltas_adjacent_corr(X_tr, Pi_star)
+
+        X_tr_t = torch.from_numpy(X_tr)
+
+        nsc.configure(
+            Pi_star=Pi_star,
+            X_train=X_tr_t,
+            tau=nsc_tau,
+            deltas=deltas,
+        )
+
+        Z_tr = nsc.compress(X_tr_t, mode="flatten").cpu().numpy()
+        Z_va = nsc.compress(torch.from_numpy(X_va), mode="flatten").cpu().numpy()
+
+        head = TabPFN25Head(head_cfg)
+        head.fit(Z_tr, y_tr)
+
+        P = head.predict_proba(Z_va)
+        pred = np.argmax(P, axis=1)
+
+        acc = accuracy_score(y_va, pred)
+        accs.append(acc)
+
+        trial.report(float(np.mean(accs)), step=fold_id)
+
+        if trial.should_prune():
+            cleanup_cuda()
+            raise optuna.TrialPruned()
+
+        cleanup_cuda()
+
+    return float(np.mean(accs))
+
+
+# -----------------------
+# Run Optuna
+# -----------------------
+sampler = optuna.samplers.TPESampler(
+    seed=SEED,
+    multivariate=True,
+    group=True,
+)
+
+pruner = optuna.pruners.MedianPruner(n_warmup_steps=10)
+
+study = optuna.create_study(
+    direction="maximize",
+    sampler=sampler,
+    pruner=pruner,
+)
+
+study.optimize(
+    objective,
+    n_trials=N_TRIALS,
+    show_progress_bar=True,
+    gc_after_trial=True,
+    n_jobs=1,
+)
+
+print("\nBest trial")
+print(f"Best mean accuracy: {study.best_value:.6f}")
+
+print("\nBest hyperparameters:")
+for key, value in study.best_params.items():
+    print(f"{key}: {value}")
+```
