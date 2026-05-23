@@ -149,5 +149,5 @@ The package has been tested primarily with:
 - matplotlib 3.7+
 - jupyterlab 4.0+
 
-Additional diagnostics, package tests, and fixed-parameter runs were executed on a separate local machine with an 8× NVIDIA RTX A6000 GPU cluster. Small numerical/runtime differences from the main paper results may therefore be observed depending on hardware configurations. On the first run, TabPFN may download the required TabPFN-2.5 checkpoint from Hugging Face; the checkpoint is cached afterward.
+The main experiments were conducted on the TITAN cluster (`x86_64`, 188 GB RAM, 8 × NVIDIA TITAN RTX GPUs, 24 GB VRAM per GPU). Additional diagnostics, package tests, and fixed-parameter runs were executed on Vulcan, an 8-GPU NVIDIA RTX A6000 machine with 8 × 49 GB VRAM, 2 × Intel Xeon Gold 5320 CPUs, and 503 GB RAM. Therefore, small numerical/runtime differences from the main paper results may be observed depending on hardware configuration. The PyPI-installed package was also checked and tested on Google Colab. On the first run, TabPFN may download the required TabPFN-2.5 checkpoint from Hugging Face; the checkpoint is cached afterward.
 
