@@ -232,7 +232,7 @@ The recommended input format is a **CSV file** where:
 - One column is used as the target column.
 - Feature columns should be numeric or convertible to numeric values.
 
-Example for classification:
+- Example for classification:
 
 ```text
 feature_1,feature_2,feature_3,...,label
