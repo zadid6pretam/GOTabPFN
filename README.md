@@ -678,8 +678,8 @@ from gotabpfn import GraphFeatureOrdering, pidf_segpca, TabPFN25Head, TabPFN25Co
 # -----------------------
 # User settings
 # -----------------------
-DATA_FILE = "coloncancer_encoded.csv"
-TARGET_COL = "label"
+DATA_FILE = "coloncancer_encoded.csv" # change your dataset file name
+TARGET_COL = "label" # change your dataset target column
 SEED = 42
 N_TRIALS = 50
 
@@ -906,3 +906,1138 @@ print("\nBest hyperparameters:")
 for key, value in study.best_params.items():
     print(f"{key}: {value}")
 ```
+
+### Example 3: Multiclass Classification with Fixed GOTabPFN Hyperparameters
+
+This example runs GOTabPFN on a multiclass CSV dataset using fixed GO-LR and NSC-pSP hyperparameters.
+
+```python
+import gc
+import time
+import random
+import numpy as np
+import pandas as pd
+import torch
+
+from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.preprocessing import StandardScaler, LabelEncoder, label_binarize
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+
+from gotabpfn import GraphFeatureOrdering, pidf_segpca, TabPFN25Head, TabPFN25Config
+
+# -----------------------
+# User settings
+# -----------------------
+DATA_FILE = "orlraws10P.csv" # change this to your dataset file name
+TARGET_COL = "label" # change this to your dataset target column
+SEED = 42
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Fixed GOTabPFN hyperparameters
+FIXED_PARAMS = {
+    "go_metric": "cosine",
+    "go_num_clusters": 5,
+    "go_refine_passes": 1,
+    "go_direction_select": False,
+    "go_feat_subsample": 3000,
+
+    "nsc_segmentation": "uniform",
+    "nsc_m_rule": "default",
+    "nsc_tau": 0.99,
+    "nsc_gamma": 2.049512863264476,
+    "nsc_beta": 0.3887505167779042,
+    "nsc_Mmin": 32,
+    "nsc_Mmax": 384,
+    "nsc_lmin": 12,
+    "assume_standardized": False,
+
+    "tabpfn_seed": 42,
+}
+
+# -----------------------
+# Utilities
+# -----------------------
+def seed_everything(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def cleanup_cuda():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def safe_multiclass_macro_ovr_auc(y_true, proba, num_classes):
+    try:
+        y_bin = label_binarize(y_true, classes=np.arange(num_classes))
+        return float(
+            roc_auc_score(
+                y_bin,
+                proba,
+                average="macro",
+                multi_class="ovr",
+            )
+        )
+    except Exception:
+        return np.nan
+
+
+# -----------------------
+# Load and preprocess data
+# -----------------------
+seed_everything(SEED)
+
+df = pd.read_csv(DATA_FILE)
+
+y_raw = df[TARGET_COL].astype(str).fillna("missing_target")
+X_df = df.drop(columns=[TARGET_COL])
+
+# Keep numeric features only
+X_df = X_df.select_dtypes(include=[np.number])
+X_df = X_df.apply(pd.to_numeric, errors="coerce")
+X_df = X_df.fillna(X_df.median(numeric_only=True)).fillna(0.0)
+
+# Encode multiclass labels
+le = LabelEncoder()
+y = le.fit_transform(y_raw).astype(np.int64)
+num_classes = len(le.classes_)
+
+# Standardize features
+scaler = StandardScaler()
+X = scaler.fit_transform(X_df.values).astype(np.float32)
+
+print(f"X shape: {X.shape}, classes: {num_classes}")
+
+# -----------------------
+# Learn GO-LR ordering once
+# -----------------------
+m_full = X.shape[1]
+feat_subsample = FIXED_PARAMS["go_feat_subsample"]
+
+rng = np.random.default_rng(SEED + 999)
+
+if feat_subsample is not None and feat_subsample < m_full:
+    feat_idx = rng.choice(m_full, size=feat_subsample, replace=False)
+    feat_idx.sort()
+else:
+    feat_idx = np.arange(m_full)
+
+X_go = X[:, feat_idx]
+
+go = GraphFeatureOrdering(
+    num_clusters=FIXED_PARAMS["go_num_clusters"],
+    metric=FIXED_PARAMS["go_metric"],
+    refine=True,
+    direction_select=FIXED_PARAMS["go_direction_select"],
+    refine_passes=FIXED_PARAMS["go_refine_passes"],
+)
+
+try:
+    Pi_sub, _, _, _ = go.fit(
+        X_go,
+        seed=SEED,
+        deterministic=True,
+        use_cpu_kmeans=False,
+    )
+except Exception:
+    cleanup_cuda()
+    Pi_sub, _, _, _ = go.fit(
+        X_go,
+        seed=SEED,
+        deterministic=True,
+        use_cpu_kmeans=True,
+    )
+
+ordered_subset = feat_idx[np.array(Pi_sub, dtype=np.int64)].tolist()
+
+if len(feat_idx) < m_full:
+    remaining = np.setdiff1d(np.arange(m_full), feat_idx, assume_unique=False)
+    Pi_star = ordered_subset + remaining.tolist()
+else:
+    Pi_star = ordered_subset
+
+Pi_star = list(map(int, Pi_star))
+
+# -----------------------
+# 5x5 cross-validation
+# -----------------------
+rkf = RepeatedStratifiedKFold(
+    n_splits=5,
+    n_repeats=5,
+    random_state=SEED,
+)
+
+head_cfg = TabPFN25Config(
+    task_type="multiclass",
+    num_classes=int(num_classes),
+    device=DEVICE,
+    random_state=int(FIXED_PARAMS["tabpfn_seed"]),
+)
+
+accs, f1s, aucs = [], [], []
+t0 = time.perf_counter()
+
+for fold_id, (tr_idx, va_idx) in enumerate(rkf.split(X, y), start=1):
+    X_tr, X_va = X[tr_idx], X[va_idx]
+    y_tr, y_va = y[tr_idx], y[va_idx]
+
+    nsc = pidf_segpca(
+        segmentation=FIXED_PARAMS["nsc_segmentation"],
+        l_min=int(FIXED_PARAMS["nsc_lmin"]),
+        m_rule=FIXED_PARAMS["nsc_m_rule"],
+        gamma=float(FIXED_PARAMS["nsc_gamma"]),
+        beta=float(FIXED_PARAMS["nsc_beta"]),
+        tau=float(FIXED_PARAMS["nsc_tau"]),
+        M_min=int(FIXED_PARAMS["nsc_Mmin"]),
+        M_max=int(FIXED_PARAMS["nsc_Mmax"]),
+        assume_standardized=bool(FIXED_PARAMS["assume_standardized"]),
+        device=DEVICE,
+    )
+
+    X_tr_t = torch.from_numpy(X_tr)
+
+    nsc.configure(
+        Pi_star=Pi_star,
+        X_train=X_tr_t,
+        tau=float(FIXED_PARAMS["nsc_tau"]),
+        deltas=None,
+    )
+
+    Z_tr = nsc.compress(X_tr_t, mode="flatten").cpu().numpy()
+    Z_va = nsc.compress(torch.from_numpy(X_va), mode="flatten").cpu().numpy()
+
+    head = TabPFN25Head(head_cfg)
+    head.fit(Z_tr, y_tr)
+
+    P = head.predict_proba(Z_va)
+    pred = np.argmax(P, axis=1)
+
+    acc = float(accuracy_score(y_va, pred))
+    f1m = float(f1_score(y_va, pred, average="macro"))
+    aucm = safe_multiclass_macro_ovr_auc(y_va, P, num_classes)
+
+    accs.append(acc)
+    f1s.append(f1m)
+    aucs.append(aucm)
+
+    print(
+        f"Fold {fold_id:02d}: "
+        f"ACC={acc:.4f}, Macro-F1={f1m:.4f}, Macro-OvR-AUC={aucm:.4f}"
+    )
+
+    cleanup_cuda()
+
+print("\nFinal 5x5 CV results")
+print(f"Accuracy      : {np.mean(accs):.4f} ± {np.std(accs, ddof=1):.4f}")
+print(f"Macro-F1      : {np.mean(f1s):.4f} ± {np.std(f1s, ddof=1):.4f}")
+print(f"Macro-OvR-AUC : {np.nanmean(aucs):.4f} ± {np.nanstd(aucs, ddof=1):.4f}")
+print(f"Elapsed time  : {time.perf_counter() - t0:.2f} seconds")
+```
+
+
+### Example 4: Multiclass Classification with Optuna Hyperparameter Tuning
+
+This example tunes GOTabPFN hyperparameters for a multiclass classification dataset. For each trial, GO-LR learns one feature ordering, then NSC-pSP and the frozen TabPFN-2.5 head are evaluated using repeated stratified cross-validation.
+
+```python
+import gc
+import random
+import numpy as np
+import pandas as pd
+import torch
+import optuna
+
+from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import accuracy_score
+
+from gotabpfn import GraphFeatureOrdering, pidf_segpca, TabPFN25Head, TabPFN25Config
+
+# -----------------------
+# User settings
+# -----------------------
+DATA_FILE = "orlraws10P.csv" #change this to your dataset file name
+TARGET_COL = "label" # change this to your dataset target column
+SEED = 42
+N_TRIALS = 50
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# -----------------------
+# Utilities
+# -----------------------
+def seed_everything(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def cleanup_cuda():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def compute_deltas_adjacent_corr(X_tr, Pi_star, eps=1e-12):
+    X_t = torch.from_numpy(X_tr).float()
+    perm = torch.tensor(Pi_star, dtype=torch.long)
+
+    Xp = X_t[:, perm]
+    Xc = Xp - Xp.mean(dim=0, keepdim=True)
+    std = Xc.std(dim=0, unbiased=False, keepdim=True).clamp_min(eps)
+    Z = Xc / std
+
+    corr = (Z[:, :-1] * Z[:, 1:]).mean(dim=0)
+    return (1.0 - corr.abs()).cpu()
+
+
+# -----------------------
+# Load and preprocess data
+# -----------------------
+seed_everything(SEED)
+
+df = pd.read_csv(DATA_FILE)
+
+y_raw = df[TARGET_COL].astype(str).fillna("missing_target")
+X_df = df.drop(columns=[TARGET_COL])
+
+# Keep numeric features only
+X_df = X_df.select_dtypes(include=[np.number])
+X_df = X_df.apply(pd.to_numeric, errors="coerce")
+X_df = X_df.fillna(X_df.median(numeric_only=True)).fillna(0.0)
+
+le = LabelEncoder()
+y = le.fit_transform(y_raw).astype(np.int64)
+num_classes = len(le.classes_)
+
+scaler = StandardScaler()
+X = scaler.fit_transform(X_df.values).astype(np.float32)
+
+rkf = RepeatedStratifiedKFold(
+    n_splits=5,
+    n_repeats=5,
+    random_state=SEED,
+)
+
+m_full = X.shape[1]
+
+# -----------------------
+# Optuna objective
+# -----------------------
+def objective(trial):
+    seed_everything(SEED)
+
+    # GO-LR hyperparameters
+    go_metric = trial.suggest_categorical(
+        "go_metric",
+        ["correlation", "cosine", "manhattan", "euclidean", "kl_divergence"],
+    )
+    go_num_clusters = trial.suggest_int("go_num_clusters", 4, 12)
+    go_refine_passes = trial.suggest_int("go_refine_passes", 1, 3)
+    go_direction_select = trial.suggest_categorical(
+        "go_direction_select",
+        [True, False],
+    )
+
+    # Optional feature subsampling for very high-dimensional datasets
+    go_feat_subsample = trial.suggest_categorical(
+        "go_feat_subsample",
+        [None, 1000, 2000, 3000],
+    )
+
+    # NSC-pSP hyperparameters
+    nsc_segmentation = trial.suggest_categorical(
+        "nsc_segmentation",
+        ["uniform", "largest_jump", "equal_mass"],
+    )
+    nsc_m_rule = trial.suggest_categorical(
+        "nsc_m_rule",
+        ["default", "idf", "gamma"],
+    )
+    nsc_tau = trial.suggest_categorical("nsc_tau", [0.95, 0.99, 0.9975])
+    nsc_gamma = trial.suggest_float("nsc_gamma", 1.0, 3.0)
+    nsc_beta = trial.suggest_float("nsc_beta", 0.0, 0.9)
+    nsc_Mmin = trial.suggest_categorical("nsc_Mmin", [16, 32, 48, 64])
+    nsc_Mmax = trial.suggest_categorical("nsc_Mmax", [128, 256, 384, 512, 640])
+    nsc_lmin = trial.suggest_categorical("nsc_lmin", [8, 12, 16])
+    assume_standardized = trial.suggest_categorical(
+        "assume_standardized",
+        [True, False],
+    )
+
+    tabpfn_seed = trial.suggest_categorical(
+        "tabpfn_seed",
+        [0, 1, 2, 3, 4, 42],
+    )
+
+    # Feature subsampling before GO-LR
+    if go_feat_subsample is not None and int(go_feat_subsample) < m_full:
+        rng = np.random.default_rng(SEED + 999)
+        feat_idx = rng.choice(m_full, size=int(go_feat_subsample), replace=False)
+        feat_idx.sort()
+    else:
+        feat_idx = np.arange(m_full)
+
+    X_go = X[:, feat_idx]
+
+    # Learn GO-LR ordering once per trial
+    go = GraphFeatureOrdering(
+        num_clusters=go_num_clusters,
+        metric=go_metric,
+        refine=True,
+        direction_select=go_direction_select,
+        refine_passes=go_refine_passes,
+    )
+
+    try:
+        Pi_sub, _, _, _ = go.fit(
+            X_go,
+            seed=SEED,
+            deterministic=True,
+            use_cpu_kmeans=False,
+        )
+    except Exception:
+        cleanup_cuda()
+        Pi_sub, _, _, _ = go.fit(
+            X_go,
+            seed=SEED,
+            deterministic=True,
+            use_cpu_kmeans=True,
+        )
+
+    ordered_subset = feat_idx[np.array(Pi_sub, dtype=np.int64)].tolist()
+
+    if len(feat_idx) < m_full:
+        remaining = np.setdiff1d(np.arange(m_full), feat_idx, assume_unique=False)
+        Pi_star = ordered_subset + remaining.tolist()
+    else:
+        Pi_star = ordered_subset
+
+    Pi_star = list(map(int, Pi_star))
+
+    head_cfg = TabPFN25Config(
+        task_type="multiclass",
+        num_classes=int(num_classes),
+        device=DEVICE,
+        random_state=int(tabpfn_seed),
+    )
+
+    accs = []
+
+    for fold_id, (tr_idx, va_idx) in enumerate(rkf.split(X, y), start=1):
+        X_tr, X_va = X[tr_idx], X[va_idx]
+        y_tr, y_va = y[tr_idx], y[va_idx]
+
+        nsc = pidf_segpca(
+            segmentation=nsc_segmentation,
+            l_min=nsc_lmin,
+            m_rule=nsc_m_rule,
+            gamma=nsc_gamma,
+            beta=nsc_beta,
+            tau=nsc_tau,
+            M_min=nsc_Mmin,
+            M_max=nsc_Mmax,
+            assume_standardized=assume_standardized,
+            device=DEVICE,
+        )
+
+        deltas = None
+        if nsc_segmentation != "uniform":
+            deltas = compute_deltas_adjacent_corr(X_tr, Pi_star)
+
+        X_tr_t = torch.from_numpy(X_tr)
+
+        nsc.configure(
+            Pi_star=Pi_star,
+            X_train=X_tr_t,
+            tau=nsc_tau,
+            deltas=deltas,
+        )
+
+        Z_tr = nsc.compress(X_tr_t, mode="flatten").cpu().numpy()
+        Z_va = nsc.compress(torch.from_numpy(X_va), mode="flatten").cpu().numpy()
+
+        head = TabPFN25Head(head_cfg)
+        head.fit(Z_tr, y_tr)
+
+        P = head.predict_proba(Z_va)
+        pred = np.argmax(P, axis=1)
+
+        acc = accuracy_score(y_va, pred)
+        accs.append(acc)
+
+        trial.report(float(np.mean(accs)), step=fold_id)
+
+        if trial.should_prune():
+            cleanup_cuda()
+            raise optuna.TrialPruned()
+
+        cleanup_cuda()
+
+    return float(np.mean(accs))
+
+
+# -----------------------
+# Run Optuna
+# -----------------------
+sampler = optuna.samplers.TPESampler(
+    seed=SEED,
+    multivariate=True,
+    group=True,
+)
+
+pruner = optuna.pruners.MedianPruner(n_warmup_steps=10)
+
+study = optuna.create_study(
+    direction="maximize",
+    sampler=sampler,
+    pruner=pruner,
+)
+
+study.optimize(
+    objective,
+    n_trials=N_TRIALS,
+    show_progress_bar=True,
+    gc_after_trial=True,
+    n_jobs=1,
+)
+
+print("\nBest trial")
+print(f"Best mean accuracy: {study.best_value:.6f}")
+
+print("\nBest hyperparameters:")
+for key, value in study.best_params.items():
+    print(f"{key}: {value}")
+```
+
+
+### Example 5: Regression with Fixed GOTabPFN Hyperparameters
+
+This example runs GOTabPFN on a regression CSV dataset using fixed GO-LR and NSC-pSP hyperparameters. The target column should contain continuous numeric values.
+
+```python
+import gc
+import time
+import random
+import numpy as np
+import pandas as pd
+import torch
+
+from sklearn.model_selection import RepeatedKFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+
+from gotabpfn import GraphFeatureOrdering, pidf_segpca, TabPFN25Head, TabPFN25Config
+
+# -----------------------
+# User settings
+# -----------------------
+DATA_FILE = "drivface.csv" # change this to your dataset file name
+TARGET_COL = "angle" # change this to your dataset file name
+SEED = 42
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Fixed GOTabPFN hyperparameters
+FIXED_PARAMS = {
+    "go_metric": "manhattan",
+    "go_num_clusters": 5,
+    "go_refine_passes": 1,
+    "go_direction_select": False,
+    "go_feat_subsample": 2000,
+
+    "nsc_segmentation": "largest_jump",
+    "nsc_m_rule": "idf",
+    "nsc_tau": 0.99,
+    "nsc_gamma": 2.654390393837633,
+    "nsc_beta": 0.043192175152615336,
+    "nsc_Mmin": 16,
+    "nsc_Mmax": 256,
+    "nsc_lmin": 12,
+    "assume_standardized": True,
+
+    "tabpfn_seed": 3,
+}
+
+# -----------------------
+# Utilities
+# -----------------------
+def seed_everything(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def cleanup_cuda():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def compute_deltas_adjacent_corr(X_tr, Pi_star, eps=1e-12):
+    X_t = torch.from_numpy(X_tr).float()
+    perm = torch.tensor(Pi_star, dtype=torch.long)
+
+    Xp = X_t[:, perm]
+    Xc = Xp - Xp.mean(dim=0, keepdim=True)
+    std = Xc.std(dim=0, unbiased=False, keepdim=True).clamp_min(eps)
+    Z = Xc / std
+
+    corr = (Z[:, :-1] * Z[:, 1:]).mean(dim=0)
+    return (1.0 - corr.abs()).cpu()
+
+
+# -----------------------
+# Load and preprocess data
+# -----------------------
+seed_everything(SEED)
+
+df = pd.read_csv(DATA_FILE)
+
+# Regression target
+y_raw = pd.to_numeric(df[TARGET_COL], errors="coerce")
+y_raw = y_raw.fillna(y_raw.median())
+y = y_raw.to_numpy(dtype=np.float32)
+
+X_df = df.drop(columns=[TARGET_COL])
+
+# Keep numeric features only
+X_df = X_df.select_dtypes(include=[np.number])
+X_df = X_df.apply(pd.to_numeric, errors="coerce")
+X_df = X_df.fillna(X_df.median(numeric_only=True)).fillna(0.0)
+
+# Standardize features
+scaler = StandardScaler()
+X = scaler.fit_transform(X_df.values).astype(np.float32)
+
+print(f"X shape: {X.shape}, y shape: {y.shape}")
+
+# -----------------------
+# Learn GO-LR ordering once
+# -----------------------
+m_full = X.shape[1]
+feat_subsample = FIXED_PARAMS["go_feat_subsample"]
+
+rng = np.random.default_rng(SEED + 999)
+
+if feat_subsample is not None and feat_subsample < m_full:
+    feat_idx = rng.choice(m_full, size=feat_subsample, replace=False)
+    feat_idx.sort()
+else:
+    feat_idx = np.arange(m_full)
+
+X_go = X[:, feat_idx]
+
+go = GraphFeatureOrdering(
+    num_clusters=FIXED_PARAMS["go_num_clusters"],
+    metric=FIXED_PARAMS["go_metric"],
+    refine=True,
+    direction_select=FIXED_PARAMS["go_direction_select"],
+    refine_passes=FIXED_PARAMS["go_refine_passes"],
+)
+
+try:
+    Pi_sub, _, _, _ = go.fit(
+        X_go,
+        seed=SEED,
+        deterministic=True,
+        use_cpu_kmeans=False,
+    )
+except Exception:
+    cleanup_cuda()
+    Pi_sub, _, _, _ = go.fit(
+        X_go,
+        seed=SEED,
+        deterministic=True,
+        use_cpu_kmeans=True,
+    )
+
+ordered_subset = feat_idx[np.array(Pi_sub, dtype=np.int64)].tolist()
+
+if len(feat_idx) < m_full:
+    remaining = np.setdiff1d(np.arange(m_full), feat_idx, assume_unique=False)
+    Pi_star = ordered_subset + remaining.tolist()
+else:
+    Pi_star = ordered_subset
+
+Pi_star = list(map(int, Pi_star))
+
+# -----------------------
+# 5x5 cross-validation
+# -----------------------
+rkf = RepeatedKFold(
+    n_splits=5,
+    n_repeats=5,
+    random_state=SEED,
+)
+
+head_cfg = TabPFN25Config(
+    task_type="regression",
+    num_classes=1,
+    device=DEVICE,
+    random_state=int(FIXED_PARAMS["tabpfn_seed"]),
+)
+
+r2s, rmses, maes = [], [], []
+t0 = time.perf_counter()
+
+for fold_id, (tr_idx, va_idx) in enumerate(rkf.split(X), start=1):
+    X_tr, X_va = X[tr_idx], X[va_idx]
+    y_tr, y_va = y[tr_idx], y[va_idx]
+
+    nsc = pidf_segpca(
+        segmentation=FIXED_PARAMS["nsc_segmentation"],
+        l_min=int(FIXED_PARAMS["nsc_lmin"]),
+        m_rule=FIXED_PARAMS["nsc_m_rule"],
+        gamma=float(FIXED_PARAMS["nsc_gamma"]),
+        beta=float(FIXED_PARAMS["nsc_beta"]),
+        tau=float(FIXED_PARAMS["nsc_tau"]),
+        M_min=int(FIXED_PARAMS["nsc_Mmin"]),
+        M_max=int(FIXED_PARAMS["nsc_Mmax"]),
+        assume_standardized=bool(FIXED_PARAMS["assume_standardized"]),
+        device=DEVICE,
+    )
+
+    deltas = None
+    if FIXED_PARAMS["nsc_segmentation"] != "uniform":
+        deltas = compute_deltas_adjacent_corr(X_tr, Pi_star)
+
+    X_tr_t = torch.from_numpy(X_tr)
+
+    nsc.configure(
+        Pi_star=Pi_star,
+        X_train=X_tr_t,
+        tau=float(FIXED_PARAMS["nsc_tau"]),
+        deltas=deltas,
+    )
+
+    Z_tr = nsc.compress(X_tr_t, mode="flatten").cpu().numpy()
+    Z_va = nsc.compress(torch.from_numpy(X_va), mode="flatten").cpu().numpy()
+
+    head = TabPFN25Head(head_cfg)
+    head.fit(Z_tr, y_tr)
+
+    pred = np.asarray(head.predict(Z_va), dtype=np.float32).reshape(-1)
+
+    r2 = float(r2_score(y_va, pred))
+    rmse = float(np.sqrt(mean_squared_error(y_va, pred)))
+    mae = float(mean_absolute_error(y_va, pred))
+
+    r2s.append(r2)
+    rmses.append(rmse)
+    maes.append(mae)
+
+    print(f"Fold {fold_id:02d}: R2={r2:.4f}, RMSE={rmse:.4f}, MAE={mae:.4f}")
+
+    cleanup_cuda()
+
+print("\nFinal 5x5 CV results")
+print(f"R2   : {np.mean(r2s):.4f} ± {np.std(r2s, ddof=1):.4f}")
+print(f"RMSE : {np.mean(rmses):.4f} ± {np.std(rmses, ddof=1):.4f}")
+print(f"MAE  : {np.mean(maes):.4f} ± {np.std(maes, ddof=1):.4f}")
+print(f"Elapsed time: {time.perf_counter() - t0:.2f} seconds")
+```
+
+### Example 6: Regression with Optuna Hyperparameter Tuning
+
+This example tunes GOTabPFN hyperparameters for a regression dataset. For each trial, GO-LR learns one feature ordering, then NSC-pSP and the frozen TabPFN-2.5 regression head are evaluated using repeated cross-validation.
+
+```python
+import gc
+import random
+import numpy as np
+import pandas as pd
+import torch
+import optuna
+
+from sklearn.model_selection import RepeatedKFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score
+
+from gotabpfn import GraphFeatureOrdering, pidf_segpca, TabPFN25Head, TabPFN25Config
+
+# -----------------------
+# User settings
+# -----------------------
+DATA_FILE = "drivface.csv" # change this to your dataset file name
+TARGET_COL = "angle" # change this to your dataset target column name
+SEED = 42
+N_TRIALS = 50
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# -----------------------
+# Utilities
+# -----------------------
+def seed_everything(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def cleanup_cuda():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def compute_deltas_adjacent_corr(X_tr, Pi_star, eps=1e-12):
+    X_t = torch.from_numpy(X_tr).float()
+    perm = torch.tensor(Pi_star, dtype=torch.long)
+
+    Xp = X_t[:, perm]
+    Xc = Xp - Xp.mean(dim=0, keepdim=True)
+    std = Xc.std(dim=0, unbiased=False, keepdim=True).clamp_min(eps)
+    Z = Xc / std
+
+    corr = (Z[:, :-1] * Z[:, 1:]).mean(dim=0)
+    return (1.0 - corr.abs()).cpu()
+
+
+# -----------------------
+# Load and preprocess data
+# -----------------------
+seed_everything(SEED)
+
+df = pd.read_csv(DATA_FILE)
+
+# Regression target
+y_raw = pd.to_numeric(df[TARGET_COL], errors="coerce")
+y_raw = y_raw.fillna(y_raw.median())
+y = y_raw.to_numpy(dtype=np.float32)
+
+X_df = df.drop(columns=[TARGET_COL])
+
+# Keep numeric features only
+X_df = X_df.select_dtypes(include=[np.number])
+X_df = X_df.apply(pd.to_numeric, errors="coerce")
+X_df = X_df.fillna(X_df.median(numeric_only=True)).fillna(0.0)
+
+scaler = StandardScaler()
+X = scaler.fit_transform(X_df.values).astype(np.float32)
+
+rkf = RepeatedKFold(
+    n_splits=5,
+    n_repeats=5,
+    random_state=SEED,
+)
+
+m_full = X.shape[1]
+
+# -----------------------
+# Optuna objective
+# -----------------------
+def objective(trial):
+    seed_everything(SEED)
+
+    # GO-LR hyperparameters
+    go_metric = trial.suggest_categorical(
+        "go_metric",
+        ["correlation", "cosine", "manhattan", "euclidean", "kl_divergence"],
+    )
+    go_num_clusters = trial.suggest_int("go_num_clusters", 4, 12)
+    go_refine_passes = trial.suggest_int("go_refine_passes", 1, 3)
+    go_direction_select = trial.suggest_categorical(
+        "go_direction_select",
+        [True, False],
+    )
+
+    # Optional feature subsampling for high-dimensional datasets
+    go_feat_subsample = trial.suggest_categorical(
+        "go_feat_subsample",
+        [None, 1000, 2000, 3000],
+    )
+
+    # NSC-pSP hyperparameters
+    nsc_segmentation = trial.suggest_categorical(
+        "nsc_segmentation",
+        ["uniform", "largest_jump", "equal_mass"],
+    )
+    nsc_m_rule = trial.suggest_categorical(
+        "nsc_m_rule",
+        ["default", "idf", "gamma"],
+    )
+    nsc_tau = trial.suggest_categorical("nsc_tau", [0.95, 0.99, 0.9975])
+    nsc_gamma = trial.suggest_float("nsc_gamma", 1.0, 3.0)
+    nsc_beta = trial.suggest_float("nsc_beta", 0.0, 0.9)
+    nsc_Mmin = trial.suggest_categorical("nsc_Mmin", [16, 32, 48, 64])
+    nsc_Mmax = trial.suggest_categorical("nsc_Mmax", [128, 256, 384, 512, 640])
+    nsc_lmin = trial.suggest_categorical("nsc_lmin", [8, 12, 16])
+    assume_standardized = trial.suggest_categorical(
+        "assume_standardized",
+        [True, False],
+    )
+
+    tabpfn_seed = trial.suggest_categorical(
+        "tabpfn_seed",
+        [0, 1, 2, 3, 4, 42],
+    )
+
+    # Feature subsampling before GO-LR
+    if go_feat_subsample is not None and int(go_feat_subsample) < m_full:
+        rng = np.random.default_rng(SEED + 999)
+        feat_idx = rng.choice(m_full, size=int(go_feat_subsample), replace=False)
+        feat_idx.sort()
+    else:
+        feat_idx = np.arange(m_full)
+
+    X_go = X[:, feat_idx]
+
+    # Learn GO-LR ordering once per trial
+    go = GraphFeatureOrdering(
+        num_clusters=go_num_clusters,
+        metric=go_metric,
+        refine=True,
+        direction_select=go_direction_select,
+        refine_passes=go_refine_passes,
+    )
+
+    try:
+        Pi_sub, _, _, _ = go.fit(
+            X_go,
+            seed=SEED,
+            deterministic=True,
+            use_cpu_kmeans=False,
+        )
+    except Exception:
+        cleanup_cuda()
+        Pi_sub, _, _, _ = go.fit(
+            X_go,
+            seed=SEED,
+            deterministic=True,
+            use_cpu_kmeans=True,
+        )
+
+    ordered_subset = feat_idx[np.array(Pi_sub, dtype=np.int64)].tolist()
+
+    if len(feat_idx) < m_full:
+        remaining = np.setdiff1d(np.arange(m_full), feat_idx, assume_unique=False)
+        Pi_star = ordered_subset + remaining.tolist()
+    else:
+        Pi_star = ordered_subset
+
+    Pi_star = list(map(int, Pi_star))
+
+    head_cfg = TabPFN25Config(
+        task_type="regression",
+        num_classes=1,
+        device=DEVICE,
+        random_state=int(tabpfn_seed),
+    )
+
+    r2s = []
+
+    for fold_id, (tr_idx, va_idx) in enumerate(rkf.split(X), start=1):
+        X_tr, X_va = X[tr_idx], X[va_idx]
+        y_tr, y_va = y[tr_idx], y[va_idx]
+
+        nsc = pidf_segpca(
+            segmentation=nsc_segmentation,
+            l_min=nsc_lmin,
+            m_rule=nsc_m_rule,
+            gamma=nsc_gamma,
+            beta=nsc_beta,
+            tau=nsc_tau,
+            M_min=nsc_Mmin,
+            M_max=nsc_Mmax,
+            assume_standardized=assume_standardized,
+            device=DEVICE,
+        )
+
+        deltas = None
+        if nsc_segmentation != "uniform":
+            deltas = compute_deltas_adjacent_corr(X_tr, Pi_star)
+
+        X_tr_t = torch.from_numpy(X_tr)
+
+        nsc.configure(
+            Pi_star=Pi_star,
+            X_train=X_tr_t,
+            tau=nsc_tau,
+            deltas=deltas,
+        )
+
+        Z_tr = nsc.compress(X_tr_t, mode="flatten").cpu().numpy()
+        Z_va = nsc.compress(torch.from_numpy(X_va), mode="flatten").cpu().numpy()
+
+        head = TabPFN25Head(head_cfg)
+        head.fit(Z_tr, y_tr)
+
+        pred = np.asarray(head.predict(Z_va), dtype=np.float32).reshape(-1)
+        r2 = r2_score(y_va, pred)
+
+        r2s.append(float(r2))
+
+        trial.report(float(np.mean(r2s)), step=fold_id)
+
+        if trial.should_prune():
+            cleanup_cuda()
+            raise optuna.TrialPruned()
+
+        cleanup_cuda()
+
+    return float(np.mean(r2s))
+
+
+# -----------------------
+# Run Optuna
+# -----------------------
+sampler = optuna.samplers.TPESampler(
+    seed=SEED,
+    multivariate=True,
+    group=True,
+)
+
+pruner = optuna.pruners.MedianPruner(n_warmup_steps=10)
+
+study = optuna.create_study(
+    direction="maximize",
+    sampler=sampler,
+    pruner=pruner,
+)
+
+study.optimize(
+    objective,
+    n_trials=N_TRIALS,
+    show_progress_bar=True,
+    gc_after_trial=True,
+    n_jobs=1,
+)
+
+print("\nBest trial")
+print(f"Best mean R2: {study.best_value:.6f}")
+
+print("\nBest hyperparameters:")
+for key, value in study.best_params.items():
+    print(f"{key}: {value}")
+```
+
+## Acknowledgements
+
+This work was supported in part by the U.S. National Science Foundation under Awards #1920920, #2125872, and #2223793. We thank the anonymous ICML reviewers for their valuable feedback and suggestions.
+
+# Our Related Works Involving Tabular Data
+
+### BSTabDiff
+
+Our generative modeling framework for high-dimensional low-sample-size tabular data:
+- **BSTabDiff: Block-Subunit Diffusion Priors for High-Dimensional Tabular Data Generation**
+
+- GitHub: https://github.com/zadid6pretam/BSTabDiff
+
+- OpenReview: https://openreview.net/forum?id=RKNDy0KhGT
+
+
+```bibtex
+@inproceedings{habib2026bstabdiff,
+  title     = {BSTabDiff: Block-Subunit Diffusion Priors for High-Dimensional Tabular Data Generation},
+  author    = {Habib, Al Zadid Sultan Bin and Ahamed, Md Younus and Gyawali, Prashnna Kumar and Doretto, Gianfranco and Adjeroh, Donald A.},
+  booktitle = {ICLR 2026 2nd Workshop on Deep Generative Models in Machine Learning: Theory, Principle and Efficacy (DeLTa)},
+  year      = {2026}
+}
+```
+- If you are interested in high-dimensional tabular synthesis, block-subunit generation, and diffusion/flow priors for HDLSS tabular data, please also refer to the BSTabDiff repository and paper.
+
+### iStructTab
+
+Our structured feature sequencing framework for multimodal learning with image and tabular data. This work involves feature sequencing or ordering for multimodal image-tabular representation learning.
+
+- **iStructTab: Structured Feature Sequencing for Multimodal Learning of Image and Tabular Data**  
+
+- GitHub: https://github.com/zadid6pretam/iStructTab
+
+```bibtex
+@inproceedings{habib2026istructtab,
+  title     = {iStructTab: Structured Feature Sequencing for Multimodal Learning of Image and Tabular Data},
+  author    = {Habib, Al Zadid Sultan Bin and Ahamed, Md Younus and Gyawali, Prashnna and Doretto, Gianfranco and Adjeroh, Donald A.},
+  booktitle = {Proceedings of the 28th International Conference on Pattern Recognition},
+  year      = {2026},
+  address   = {Lyon, France}
+}
+```
+- If you are interested in structured feature sequencing, multimodal fusion of image and tabular data (the integration problem), and feature order-aware tabular representation learning, please also refer to the iStructTab repository and paper.
+
+## DynaTab
+
+Our more recent work on learned feature ordering for high-dimensional tabular data:
+
+- **DynaTab: Dynamic Feature Ordering as Neural Rewiring for High-Dimensional Tabular Data**
+
+- GitHub: https://github.com/zadid6pretam/DynaTab
+- Paper Link: https://proceedings.mlr.press/v308/habib26a.html
+
+```bibtex
+@inproceedings{habib2026dynatab,
+  title     = {{DynaTab: Dynamic Feature Ordering as Neural Rewiring for High-Dimensional Tabular Data}},
+  author    = {Habib, Al Zadid Sultan Bin and Doretto, Gianfranco and Adjeroh, Donald A.},
+  booktitle = {Proceedings of the AAAI 2026 First International Workshop on Neuro for AI \& AI for Neuro: Towards Multi-Modal Natural Intelligence (NeuroAI)},
+  year      = {2026},
+  series    = {PMLR}
+}
+```
+- If you are interested in learned feature ordering, neural rewiring for high-dimensional tabular data, and sequential backbone design for HDLSS settings, please also refer to the benchmark study in DynaTab repository and paper.
+
+
+### TabSeq
+
+Our earlier work on sequential modeling for tabular data:
+
+- **TabSeq: A Framework for Deep Learning on Tabular Data via Sequential Ordering**  
+
+-  GitHub: https://github.com/zadid6pretam/TabSeq  
+
+-  Springer ICPR 2024 proceedings: https://link.springer.com/chapter/10.1007/978-3-031-78128-5_27
+
+-  arXiv: https://arxiv.org/abs/2410.13203
+
+```bibtex
+@inproceedings{habib2024tabseq,
+  title={TabSeq: A Framework for Deep Learning on Tabular Data via Sequential Ordering},
+  author={Habib, Al Zadid Sultan Bin and Wang, Kesheng and Hartley, Mary-Anne and Doretto, Gianfranco and A. Adjeroh, Donald},
+  booktitle={International Conference on Pattern Recognition},
+  pages={418--434},
+  year={2024},
+  organization={Springer}
+}
+```
+- If you are interested in sequential feature ordering for tabular data, deep sequential backbones, and early feature ordering-based tabular modeling, please also refer to the TabSeq repository and paper.
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+### ZAYAN
+
+This repository corresponds to our separate collaborative work on tabular remote sensing and environmental data:
+- **ZAYAN: Disentangled Contrastive Transformer for Tabular Remote Sensing Data**
+
+- GitHub: https://github.com/zadid6pretam/ZAYAN
+
+- arXiv: https://arxiv.org/abs/2604.27606
+
+```bibtex
+@inproceedings{habib2026zayan,
+  title     = {ZAYAN: Disentangled Contrastive Transformer for Tabular Remote Sensing Data},
+  author    = {Habib, Al Zadid Sultan Bin and Tasnim, Tanpia and Islam, Md. Ekramul and Tabasum, Muntasir},
+  booktitle = {Proceedings of the 28th International Conference on Pattern Recognition},
+  year      = {2026},
+  address   = {Lyon, France}
+}
+```
+- ZAYAN focuses on feature-level contrastive learning and Transformer-based classification for tabular remote sensing and environmental datasets.
+- Note: ZAYAN is not part of my PhD dissertation work on high-dimensional tabular learning and HDLSS modeling; it was developed as a separate collaborative project.
+
+## Contact
+
+For any questions, issues, or suggestions related to this repository, please feel free to contact us or open an issue on GitHub.
