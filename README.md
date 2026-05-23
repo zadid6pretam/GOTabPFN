@@ -93,7 +93,7 @@ Representative notebooks include:
 - **`GOTabPFN_ClusterSizeAblation.ipynb`**  
   Cluster-size sensitivity/ablation experiments.
 - **`GOTabPFN_Seed_Sensitivity.ipynb`**  
-  Seed-sensitivity analysis.
+  TabPFN seed sensitivity analysis.
 
 ### Package test notebook
 
