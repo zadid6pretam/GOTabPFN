@@ -45,7 +45,7 @@ Al Zadid Sultan Bin Habib, Md Younus Ahamed, Prashnna Gyawali, Gianfranco Dorett
 BibTeX:
 ```bibtex
 @inproceedings{habib2026gotabpfn,
-  title     = {GOTabPFN: From Feature Ordering to Compact Tokenization for Tabular Foundation Models on High-Dimensional Data},
+  title     = {{GOTabPFN: From Feature Ordering to Compact Tokenization for Tabular Foundation Models on High-Dimensional Data}},
   author    = {Habib, Al Zadid Sultan Bin and Ahamed, Md Younus and Gyawali, Prashnna and Doretto, Gianfranco and Adjeroh, Donald A.},
   booktitle = {Proceedings of the 43rd International Conference on Machine Learning},
   year      = {2026}
