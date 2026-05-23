@@ -78,7 +78,7 @@ This folder contains the core GOTabPFN implementation and standalone utility mod
 
 ### Experiment notebooks: `GOTabPFN Experiments/`
 
-This folder contains experiment notebooks used during the initial submission and rebuttal/ablation period. Some notebooks may reflect earlier package/module names or earlier experimental scripts, but they are retained for reproducibility and transparency.
+This folder contains experiment notebooks used during the initial submission and rebuttal/ablation period. Some notebooks may reflect earlier package/module names or earlier experimental scripts, but they are retained for reproducibility and transparency. Some notebooks contain full Optuna tuning scripts, while others provide fixed-run scripts using the best GO-LR and NSC hyperparameters found after Optuna search.
 
 Representative notebooks include:
 
