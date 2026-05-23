@@ -200,3 +200,138 @@ pip install .
 ```bash
 pip install gotabpfn
 ```
+
+## Dataset Compatibility and Preprocessing Guidelines
+
+GOTabPFN is designed for tabular datasets, with particular focus on high-dimensional low-sample size tabular data where the number of features can be much larger than the number of samples. Typical examples include gene expression datasets, biomedical tabular datasets, document-term/tabular representations, extracted image feature embeddings, sensor derived data, and other numeric high-dimensional datasets.
+
+### Supported Task Types
+
+GOTabPFN supports:
+
+- **Binary classification**
+- **Multiclass classification**
+- **Regression**
+
+The task type is controlled through the TabPFN head configuration:
+
+```python
+TabPFN25Config(task_type="binary", ...)
+TabPFN25Config(task_type="multiclass", ...)
+TabPFN25Config(task_type="regression", ...)
+```
+- For classification, labels should be encoded as class labels. The example notebooks usually apply LabelEncoder or convert labels into contiguous integer classes before training. For regression, the target column should contain continuous numeric values.
+
+
+### Expected input format
+
+The recommended input format is a **CSV file** where:
+
+- Rows correspond to samples.
+- Columns correspond to features.
+- One column is used as the target column.
+- Feature columns should be numeric or convertible to numeric values.
+
+Example for classification:
+
+```text
+feature_1,feature_2,feature_3,...,label
+0.12,1.48,-0.33,...,1
+0.08,1.21,-0.52,...,0
+...
+```
+- Example for regression:
+
+```text
+feature_1,feature_2,feature_3,...,target
+0.12,1.48,-0.33,...,35.7
+0.08,1.21,-0.52,...,42.1
+...
+```
+
+
+### Numeric features
+
+GOTabPFN’s GO-LR ordering and NSC compression modules operate on numeric feature matrices. Therefore, the safest setup is to provide a CSV where all feature columns are numeric after removing the target column.
+
+If non-numeric columns are present, the provided notebook scripts and wrappers can drop them automatically. For example, columns containing sample IDs, filenames, text IDs, or categorical strings can be removed before fitting:
+
+```python
+num_cols = X_df.select_dtypes(include=[np.number]).columns.tolist()
+X_df = X_df[num_cols]
+```
+- This is useful for datasets that include metadata columns such as:
+
+```text
+sample_id
+patient_id
+cell
+filename
+image_path
+group_name
+```
+- These columns should not be used directly as numeric features unless they have been properly encoded.
+
+
+### Categorical features
+
+The current GOTabPFN release is primarily intended for numeric tabular features. If your dataset contains categorical columns, recommended options are:
+
+1. Drop non-numeric categorical columns if they are identifiers or metadata.
+2. Encode meaningful categorical variables before using GOTabPFN.
+3. Avoid using arbitrary ID columns as categorical features, because they can introduce spurious ordering or leakage.
+
+Simple label encoding may be acceptable for ordinal categories, but for nominal categories, one-hot encoding or another appropriate categorical encoding should be considered before running GOTabPFN.
+
+### Missing Values
+
+GOTabPFN expects a numeric matrix without `NaN` or infinite values. The example scripts typically handle missing values by replacing invalid values with zero:
+
+```python
+X = np.nan_to_num(
+    X,
+    nan=0.0,
+    posinf=0.0,
+    neginf=0.0,
+).astype(np.float32)
+```
+- For more careful preprocessing, especially in applied datasets, users may prefer median imputation:
+
+```python
+X_num = X_num.fillna(X_num.median(numeric_only=True))
+X_num = X_num.fillna(0.0)
+```
+
+- The same preprocessing rule used for training data should also be applied to validation/test data. In cross-validation experiments, imputation and scaling should ideally be fit on the training fold only and then applied to the validation fold.
+
+
+### Block 7: Feature scaling
+
+Feature scaling is recommended. In most experiments, GOTabPFN uses standardization:
+
+```python
+from sklearn.preprocessing import StandardScaler
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X).astype(np.float32)
+```
+- For cross-validation, the leakage-safe version is:
+
+```python
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train_raw).astype(np.float32)
+X_valid = scaler.transform(X_valid_raw).astype(np.float32)
+```
+- Some released experiment scripts use global standardization to match the original experimental protocol. For new experiments or real applications, fold-wise standardization is usually preferred.
+
+
+### Block 8: Target preprocessing
+
+For classification, the target should be encoded into integer class labels:
+
+```python
+from sklearn.preprocessing import LabelEncoder
+
+le = LabelEncoder()
+y = le.fit_transform(y_raw).astype(np.int64)
+```
