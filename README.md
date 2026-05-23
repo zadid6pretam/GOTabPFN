@@ -1975,13 +1975,18 @@ One of our older works on learned feature ordering for high-dimensional tabular 
 - GitHub: https://github.com/zadid6pretam/DynaTab
 - Paper Link: https://proceedings.mlr.press/v308/habib26a.html
 
-```bibtex
-@inproceedings{habib2026dynatab,
-  title     = {{DynaTab: Dynamic Feature Ordering as Neural Rewiring for High-Dimensional Tabular Data}},
-  author    = {Habib, Al Zadid Sultan Bin and Doretto, Gianfranco and Adjeroh, Donald A.},
-  booktitle = {Proceedings of the AAAI 2026 First International Workshop on Neuro for AI \& AI for Neuro: Towards Multi-Modal Natural Intelligence (NeuroAI)},
+Bibtex:
+```bash
+@InProceedings{dynatab,
+  title = 	 {{DynaTab: Dynamic Feature Ordering as Neural Rewiring for High-Dimensional Tabular Data}},
+  author =       {Habib, Al Zadid Sultan Bin and Doretto, Gianfranco and Adjeroh, Donald A.},
+  booktitle = 	 {{Proceedings of the First Workshop on NeuroAI Multimodal Intelligence @ AAAI 2026}},
+  pages     = {27--57},
   year      = {2026},
-  series    = {PMLR}
+  volume    = {308},
+  series    = {{Proceedings of Machine Learning Research}},
+  publisher = {PMLR},
+  url = 	 {https://proceedings.mlr.press/v308/habib26a.html}
 }
 ```
 - If you are interested in learned feature ordering, neural rewiring for high-dimensional tabular data, and sequential backbone design for HDLSS settings, please also refer to the benchmark study in DynaTab repository and paper.
