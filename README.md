@@ -305,7 +305,7 @@ X_num = X_num.fillna(0.0)
 - The same preprocessing rule used for training data should also be applied to validation/test data. In cross-validation experiments, imputation and scaling should ideally be fit on the training fold only and then applied to the validation fold.
 
 
-### Block 7: Feature scaling
+### Feature scaling
 
 Feature scaling is recommended. In most experiments, GOTabPFN uses standardization:
 
@@ -325,7 +325,7 @@ X_valid = scaler.transform(X_valid_raw).astype(np.float32)
 - Some released experiment scripts use global standardization to match the original experimental protocol. For new experiments or real applications, fold-wise standardization is usually preferred.
 
 
-### Block 8: Target preprocessing
+### Target preprocessing
 
 For classification, the target should be encoded into integer class labels:
 
@@ -335,3 +335,159 @@ from sklearn.preprocessing import LabelEncoder
 le = LabelEncoder()
 y = le.fit_transform(y_raw).astype(np.int64)
 ```
+- For binary classification, labels should become:
+```text
+0, 1
+```
+- For multiclass classification, labels should become:
+```text
+0, 1, 2, ..., C-1
+```
+- For regression, the target should be numeric:
+```text
+y = pd.to_numeric(df[target_col], errors="coerce")
+y = y.fillna(y.median())
+y = y.to_numpy(dtype=np.float32)
+```
+
+
+### Dataset size and dimensionality
+
+GOTabPFN is especially useful for high-dimensional regimes, including:
+
+- **HDLSS**: high-dimensional, low-sample-size datasets.
+- Datasets where feature ordering may expose local structure.
+- Datasets where compact tokenization can reduce the feature space before passing data to TabPFN-2.5 interface.
+
+The method can also run on lower-dimensional datasets, but the benefits of feature ordering and NSC compression are expected to be stronger when the feature space contains redundancy, correlated feature groups, or structured feature neighborhoods.
+
+### TabPFN Constraints
+
+GOTabPFN uses a frozen TabPFN-2.5 head through `tabpfn==6.3.1`. Therefore, it inherits the practical constraints of the installed TabPFN version.
+
+In general:
+
+- Classification tasks should stay within the class-count limit supported by TabPFN.
+- Very large sample sizes may require subsampling, batching strategies, or another downstream model.
+- The first run may download a TabPFN-2.5 checkpoint from Hugging Face. The checkpoint is cached afterward.
+
+For best reproducibility, use:
+
+```txt
+pip install tabpfn==6.3.1
+```
+
+
+### GO-LR feature ordering input
+
+The GO-LR module expects a numeric matrix:
+
+```python
+X.shape == (n_samples, n_features)
+```
+- GO-LR learns a feature ordering:
+```python
+Pi_star = [feature_index_1, feature_index_2, ..., feature_index_m]
+```
+
+The standalone GO-LR.py wrapper can take a CSV file, drop the target column, keep numeric features, run ordering, and save:
+- reordered feature table,
+- learned feature ordering,
+- ordering runtime,
+- TSP path cost,
+- MinLA cost.
+
+Example:
+```python
+from gotabpfn import run_golr_csv
+
+result = run_golr_csv(
+    csv_path="coloncancer_encoded.csv",
+    target_col="label",
+    dataset_name="Colon",
+    metric="euclidean",
+    num_clusters=10,
+    refine_passes=3,
+    direction_select=True,
+    out_prefix="colon_golr",
+)
+```
+
+
+### NSC compression input
+
+The NSC modules expect:
+
+- a numeric feature matrix,
+- a learned or identity feature ordering,
+- optional hyperparameters controlling segmentation and compression.
+
+The main GOTabPFN variant uses **NSC-pSP**, which combines PCA-IDF-aware budget selection with segment-wise principal subspace projection.
+
+The package also includes standalone variants:
+
+- `NSC-pSP.py`: PCA-IDF-aware segment-wise projection.
+- `NSC-SP.py`: segment-wise projection with fixed/provided compression budget.
+- `NSC-P.py`: PCA-IDF-aware descriptor/statistics pooling.
+- `NSC.py`: original descriptor/statistics pooling.
+
+### Recommended Minimal Preprocessing Pipeline
+
+For most users, the recommended preprocessing workflow is:
+
+```python
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+
+df = pd.read_csv("dataset.csv")
+
+target_col = "label"
+y_raw = df[target_col]
+X_df = df.drop(columns=[target_col])
+
+# Keep numeric features only
+X_df = X_df.select_dtypes(include=[np.number])
+
+# Handle missing values
+X_df = X_df.apply(pd.to_numeric, errors="coerce")
+X_df = X_df.fillna(X_df.median(numeric_only=True))
+X_df = X_df.fillna(0.0)
+
+# Scale features
+scaler = StandardScaler()
+X = scaler.fit_transform(X_df.values).astype(np.float32)
+
+# Encode labels for classification
+le = LabelEncoder()
+y = le.fit_transform(y_raw).astype(np.int64)
+```
+For regression, replace the target preprocessing with:
+```python
+y = pd.to_numeric(y_raw, errors="coerce")
+y = y.fillna(y.median())
+y = y.to_numpy(dtype=np.float32)
+```
+
+
+### What users do not need to do
+
+Users do not need to manually construct a feature graph, manually define feature neighborhoods, or manually create TabPFN tokens. GOTabPFN handles:
+
+- graph-guided feature ordering,
+- local refinement of the ordering,
+- feature segmentation,
+- NSC compression/tokenization,
+- TabPFN-2.5 prediction head fitting.
+
+Users mainly need to provide a clean numeric feature matrix and a target column.
+
+### Practical Notes
+
+- Remove sample IDs, filenames, patient IDs, and other non-feature metadata before training.
+- Standardize features before GO-LR and NSC.
+- Use fold-wise preprocessing for strict cross-validation.
+- Use `tabpfn==6.3.1` for TabPFN-2.5 compatibility.
+- The first TabPFN run may download the required checkpoint from Hugging Face.
+- GPU is recommended for faster experiments, but some components can fall back to CPU.
+- Runtime and numerical results may vary slightly across hardware configurations.
