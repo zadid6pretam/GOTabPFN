@@ -125,7 +125,6 @@ matplotlib>=3.7
 
 - **`requirements.txt`** - Python dependencies required to run the GOTabPFN package and notebooks.
 - **`GOTabPFN_Architecture.png`** - High-level architecture diagram of the GOTabPFN framework.
-- **`GOTabPFN_Package_Test.ipynb`** - Local package test notebook covering imports, GO-LR, NSC variants, and small binary/multiclass/regression runs.
 - **`LICENSE`** - MIT license for this repository.
 - **`README.md`** - Project overview, installation, usage instructions, repository structure, and citation information.
 - **`.gitignore`** - Standard Git ignore rules for Python, Jupyter, cache files, checkpoints, and experiment outputs.
