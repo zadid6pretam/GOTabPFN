@@ -151,3 +151,52 @@ The package has been tested primarily with:
 
 The main experiments were conducted on the TITAN cluster (`x86_64`, 188 GB RAM, 8 × NVIDIA TITAN RTX GPUs, 24 GB VRAM per GPU). Additional diagnostics, package tests, and fixed-parameter runs were executed on Vulcan, an 8-GPU NVIDIA RTX A6000 machine with 8 × 49 GB VRAM, 2 × Intel Xeon Gold 5320 CPUs, and 503 GB RAM. Therefore, small numerical/runtime differences from the main paper results may be observed depending on hardware configuration. The PyPI-installed package was also checked and tested on Google Colab. On the first run, TabPFN may download the required TabPFN-2.5 checkpoint from Hugging Face; the checkpoint is cached afterward.
 
+## Installation
+
+You can install **GOTabPFN** in several ways depending on your workflow.
+
+### Option 1: Clone the Repository (Recommended for Development)
+
+```bash
+git clone https://github.com/zadid6pretam/GOTabPFN.git
+cd GOTabPFN
+pip install -r requirements.txt
+pip install -e .
+```
+
+
+### Option 2: Install Directly from GitHub
+
+```bash
+pip install "git+https://github.com/zadid6pretam/GOTabPFN.git"
+```
+
+
+### Option 3: Use a Virtual Environment
+
+```bash
+python -m venv gotabpfn-env
+source gotabpfn-env/bin/activate  # On Windows: gotabpfn-env\Scripts\activate
+
+git clone https://github.com/zadid6pretam/GOTabPFN.git
+cd GOTabPFN
+pip install -r requirements.txt
+pip install -e .
+```
+
+
+### Option 4: Local Install Without Editable Mode
+
+```bash
+git clone https://github.com/zadid6pretam/GOTabPFN.git
+cd GOTabPFN
+pip install -r requirements.txt
+pip install .
+```
+
+
+### Option 5: Install from PyPI
+
+```bash
+pip install gotabpfn
+```
