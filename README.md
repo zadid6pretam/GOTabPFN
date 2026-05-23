@@ -17,7 +17,7 @@
 ![PyPI](https://img.shields.io/badge/PyPI-gotabpfn-blue)
 
 <p align="center">
-  <img src="GOTabPFN_Architecture.png" alt="GOTabPFN Architecture" width="650">
+  <img src="GOTabPFN_Architecture.png" alt="GOTabPFN Architecture" width="580">
 </p>
 
 <p align="center">
