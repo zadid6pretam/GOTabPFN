@@ -55,3 +55,102 @@ BibTeX:
 ```
 
 - Find it on ICML portal: https://icml.cc/virtual/2026/poster/62523
+
+
+## Files and Repository Structure
+
+### Python package: `gotabpfn/`
+
+This folder contains the core GOTabPFN implementation and standalone utility modules:
+
+- `__init__.py` - Package initializer and high-level API exports.
+- `gotabpfn.py` - Main GOTabPFN implementation, including:
+  - `GraphFeatureOrdering` for graph-guided feature ordering.
+  - `pidf_segpca` / NSC-pSP for PCA-IDF-aware segment-wise compression.
+  - `TabPFN25Head` and `TabPFN25Config` for using a frozen TabPFN-2.5 classifier/regressor head.
+  - End-to-end components for feature ordering, compact tokenization, and TabPFN-based prediction.
+- `GO-LR.py` - Standalone Graph-guided Ordering with Local Refinement (GO-LR) module. It can be used independently as a feature-ordering/metaheuristic algorithm and reports ordering runtime, TSP path cost, MinLA cost, learned ordering, and reordered feature tables.
+- `NSC-pSP.py` - Standalone NSC-pSP compression module: PCA-IDF-aware segment-wise principal subspace projection.
+- `NSC-SP.py` - Standalone NSC-SP compression module: segment-wise principal subspace projection with user-provided `M` or `d_hat`.
+- `NSC-P.py` - Standalone NSC-P compression module: PCA-IDF-aware descriptor/statistics-based compression.
+- `NSC.py` - Standalone original NSC descriptor/statistics-based compression module.
+- `gotabpfn_dataset_diagnostics.py` - Dataset-level diagnostics for IDF/FOE/`P_success`, locality gains, LES, and AUC under the cumulative explained-variance--IDF curve.
+
+### Experiment notebooks: `GOTabPFN Experiments/`
+
+This folder contains experiment notebooks used during the initial submission and rebuttal/ablation period. Some notebooks may reflect earlier package/module names or earlier experimental scripts, but they are retained for reproducibility and transparency.
+
+Representative notebooks include:
+
+- **`GOLR_NSC_TabICL_Colon.ipynb`** and **`GOLR_NSC_TabICL_Lung.ipynb`**  
+  Experiments combining GO-LR ordering and NSC compression with TabICL-style evaluation baselines.
+- **`GOTabPFN_Colon_exp.ipynb`**, **`GOTabPFN_Lung.ipynb`**, **`GOTabPFN_ALLAML.ipynb`**, **`GOTabPFN_Arcene.ipynb`**, **`GOTabPFN_SMK.ipynb`**, **`GOTabPFN_TOX.ipynb`**  
+  Main HDLSS dataset experiments for GOTabPFN.
+- **`GOTabPFN_BASEHOCK.ipynb`**, **`GOTabPFN_RELATHE.ipynb`**, **`GOTabPFN_Cell_Cycle.ipynb`**  
+  Cross-domain tabular experiments.
+- **`GOTabPFN_DrivFace_Classification.ipynb`**  
+  DrivFace classification experiment.
+- **`GOTabPFN_Colon_AUC_F1.ipynb`**  
+  Additional AUC/F1 evaluation for Colon.
+- **`GOTabPFN_ClusterSizeAblation.ipynb`**  
+  Cluster-size sensitivity/ablation experiments.
+- **`GOTabPFN_Seed_Sensitivity.ipynb`**  
+  Seed-sensitivity analysis.
+
+### Package test notebook
+
+- **`GOTabPFN_Package_Test.ipynb`**  
+  Tests the local package setup. This notebook checks package imports, GO-LR as a standalone metaheuristic ordering module, the four NSC compression variants, and small binary/multiclass/regression runs on a separate local machine.
+
+
+- **`GOTabPFN_PIP_Install_Check.ipynb`**  
+  Minimal notebook for checking the installed `gotabpfn` package after `pip install`. It will verify imports, initialize core modules, and run a toy workflow.
+
+### Main dependencies
+
+The repository uses the following main dependencies:
+
+```txt
+numpy>=1.23
+pandas>=1.5
+scipy>=1.11
+scikit-learn>=1.2
+tqdm>=4.64
+optuna>=3.5
+torch>=2.1
+tabpfn==6.3.1
+kmeans-gpu==0.0.5
+matplotlib>=3.7
+```
+
+### Other top-level files
+
+- **`requirements.txt`** - Python dependencies required to run the GOTabPFN package and notebooks.
+- **`GOTabPFN_Architecture.png`** - High-level architecture diagram of the GOTabPFN framework.
+- **`GOTabPFN_Package_Test.ipynb`** - Local package test notebook covering imports, GO-LR, NSC variants, and small binary/multiclass/regression runs.
+- **`LICENSE`** - MIT license for this repository.
+- **`README.md`** - Project overview, installation, usage instructions, repository structure, and citation information.
+- **`.gitignore`** - Standard Git ignore rules for Python, Jupyter, cache files, checkpoints, and experiment outputs.
+- **`pyproject.toml`** - Modern Python build-system and package metadata file for installation and PyPI upload.
+- **`setup.cfg`** - Optional setuptools configuration file for package metadata and installation settings, if used alongside `pyproject.toml`.
+
+
+### Tested Environment
+
+The package has been tested primarily with:
+
+- Python 3.10+
+- numpy 1.23+
+- pandas 1.5+
+- scipy 1.11+
+- scikit-learn 1.2+
+- tqdm 4.64+
+- optuna 3.5+
+- torch 2.1+
+- tabpfn 6.3.1
+- kmeans-gpu 0.0.5
+- matplotlib 3.7+
+- jupyterlab 4.0+
+
+Additional diagnostics, package tests, and fixed-parameter runs were executed on a separate local machine with an 8× NVIDIA RTX A6000 GPU cluster. Small numerical/runtime differences from the main paper results may therefore be observed depending on hardware configurations. On the first run, TabPFN may download the required TabPFN-2.5 checkpoint from Hugging Face; the checkpoint is cached afterward.
+
