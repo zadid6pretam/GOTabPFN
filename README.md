@@ -86,10 +86,8 @@ Representative notebooks include:
   Experiments combining GO-LR ordering and NSC compression with TabICL-style evaluation baselines.
 - **`GOTabPFN_Colon_exp.ipynb`**, **`GOTabPFN_Lung.ipynb`**, **`GOTabPFN_ALLAML.ipynb`**, **`GOTabPFN_Arcene.ipynb`**, **`GOTabPFN_SMK.ipynb`**, **`GOTabPFN_TOX.ipynb`**  
   Portion of the main HDLSS dataset experiments for GOTabPFN.
-- **`GOTabPFN_BASEHOCK.ipynb`**, **`GOTabPFN_RELATHE.ipynb`**, **`GOTabPFN_Cell_Cycle.ipynb`**  
+- **`GOTabPFN_BASEHOCK.ipynb`**, **`GOTabPFN_RELATHE.ipynb`**, **`GOTabPFN_Cell_Cycle.ipynb`**, **`GOTabPFN_DrivFace_Classification.ipynb`** 
   Portion of the cross-domain tabular experiments.
-- **`GOTabPFN_DrivFace_Classification.ipynb`**  
-  DrivFace classification experiment.
 - **`GOTabPFN_Colon_AUC_F1.ipynb`**  
   Additional AUC/F1 evaluation for Colon.
 - **`GOTabPFN_ClusterSizeAblation.ipynb`**  
