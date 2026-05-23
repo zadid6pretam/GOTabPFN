@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gotabpfn"
+version = "0.1.0"
+description = "GOTabPFN: From Feature Ordering to Compact Tokenization for Tabular Foundation Models on High-Dimensional Data"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "Al Zadid Sultan Bin Habib" },
+  { name = "Md Younus Ahamed" },
+  { name = "Prashnna Kumar Gyawali" },
+  { name = "Gianfranco Doretto" },
+  { name = "Donald A. Adjeroh" }
+]
+keywords = [
+  "tabular-deep-learning",
+  "tabular-learning",
+  "tabular-data",
+  "feature-ordering",
+  "column-permutation",
+  "TabPFN",
+  "HDLSS",
+  "compression",
+  "high-dimensional-low-sample-size",
+  "tabular-foundation-model"
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+  "Topic :: Scientific/Engineering :: Mathematics"
+]
+
+dependencies = [
+  "numpy>=1.23",
+  "pandas>=1.5",
+  "scipy>=1.11",
+  "scikit-learn>=1.2",
+  "tqdm>=4.64",
+  "optuna>=3.5",
+  "torch>=2.1",
+  "tabpfn==6.3.1",
+  "kmeans-gpu==0.0.5",
+  "matplotlib>=3.7"
+]
+
+[project.urls]
+Homepage = "https://github.com/zadid6pretam/GOTabPFN"
+Paper = "https://icml.cc/virtual/2026/poster/62523"
+Conference = "https://icml.cc/"
+Source = "https://github.com/zadid6pretam/GOTabPFN"
+Issues = "https://github.com/zadid6pretam/GOTabPFN/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gotabpfn*"]
+
+[tool.setuptools.package-data]
+gotabpfn = [
+  "GO-LR.py",
+  "NSC.py",
+  "NSC-P.py",
+  "NSC-SP.py",
+  "NSC-pSP.py",
+  "gotabpfn_dataset_diagnostics.py"
+]
