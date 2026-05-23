@@ -74,7 +74,7 @@ This folder contains the core GOTabPFN implementation and standalone utility mod
 - `NSC-SP.py` - Standalone NSC-SP compression module: segment-wise principal subspace projection with user-provided `M` or `d_hat`.
 - `NSC-P.py` - Standalone NSC-P compression module: PCA-IDF-aware descriptor/statistics-based compression.
 - `NSC.py` - Standalone original NSC descriptor/statistics-based compression module.
-- `gotabpfn_dataset_diagnostics.py` - Dataset-level diagnostics for IDF/FOE/`P_success`, locality gains, LES, and AUC under the cumulative explained-variance--IDF curve.
+- `gotabpfn_dataset_diagnostics.py` - Dataset-level diagnostics for IDF/FOE/`P_success`, locality gains, LES, and AUC under the cumulative explained variance-IDF curve.
 
 ### Experiment notebooks: `GOTabPFN Experiments/`
 
