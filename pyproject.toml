@@ -67,6 +67,7 @@ include = ["gotabpfn*"]
 
 [tool.setuptools.package-data]
 gotabpfn = [
+  "gotabpfn.py",
   "GO-LR.py",
   "NSC.py",
   "NSC-P.py",
