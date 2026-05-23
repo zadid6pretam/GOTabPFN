@@ -98,7 +98,7 @@ Representative notebooks include:
 ### Package test notebook
 
 - **`GOTabPFN_Package_Test.ipynb`**  
-  Tests the local package setup. This notebook checks package imports, GO-LR as a standalone metaheuristic ordering module, the four NSC compression variants, and small binary/multiclass/regression runs on a separate local machine.
+  Tests the local package setup. This notebook checks package imports, GO-LR as a standalone metaheuristic ordering module, the four NSC compression variants, and binary (Colon)/multiclass (orlaws10P)/regression (DrivFace) runs on a separate local machine.
 
 
 - **`GOTabPFN_PIP_Install_Check.ipynb`**  
