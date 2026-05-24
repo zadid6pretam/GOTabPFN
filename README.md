@@ -655,7 +655,7 @@ print(f"AUC      : {np.mean(aucs):.4f} ± {np.std(aucs, ddof=1):.4f}")
 
 
 
-### Binary classification with Optuna hyperparameter tuning
+### Example 2: Binary classification with Optuna hyperparameter tuning
 
 This example tunes GOTabPFN hyperparameters using Optuna. For each trial, GO-LR learns one feature ordering on the full training matrix, then NSC-pSP and TabPFN-2.5 are evaluated using repeated stratified cross-validation.
 
