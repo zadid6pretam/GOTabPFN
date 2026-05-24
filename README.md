@@ -2902,6 +2902,291 @@ datasets = [
 
 The diagnostics automatically drop the target column and any non-numeric feature columns before computing ordering-related metrics.
 
+### Example 10: Single-Dataset Ordering Diagnostics
+
+This example runs GOTabPFN's dataset-diagnostic utility on one CSV file. It computes high-dimensionality and ordering-related diagnostics such as feature-to-sample ratio, intrinsic dimensionality factor, feature ordering effectiveness score, locality/enrichment scores, and related metrics. The example first creates a dummy high-dimensional CSV dataset so the code can be tested immediately. To use your own dataset, change only the `DATA_FILE`, `TARGET_COL`, and `DATASET_NAME` variables.
+
+```python
+# ============================================================
+# This script:
+#   1. Creates one dummy high-dimensional CSV dataset.
+#   2. Loads GOTabPFN's diagnostics module.
+#   3. Runs ordering diagnostics for one dataset.
+#   4. Saves full and selected diagnostic tables.
+#
+# To use your own dataset, change DATA_FILE, TARGET_COL, and DATASET_NAME.
+# ============================================================
+
+import os
+import sys
+import random
+import warnings
+import importlib
+
+warnings.filterwarnings("ignore")
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+import numpy as np
+import pandas as pd
+
+from sklearn.datasets import make_classification
+from sklearn.preprocessing import StandardScaler
+
+
+# ------------------------------------------------------------
+# Reproducibility
+# ------------------------------------------------------------
+SEED = 42
+
+def seed_everything(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+
+seed_everything(SEED)
+
+
+# ------------------------------------------------------------
+# Optional: create a dummy high-dimensional dataset
+# ------------------------------------------------------------
+# You can delete this section when using your own CSV file.
+def create_dummy_single_dataset(
+    csv_path,
+    target_col,
+    n_samples=120,
+    n_features=3000,
+    n_classes=3,
+    n_informative=150,
+    n_redundant=80,
+    seed=42,
+):
+    X, y = make_classification(
+        n_samples=n_samples,
+        n_features=n_features,
+        n_informative=n_informative,
+        n_redundant=n_redundant,
+        n_repeated=0,
+        n_classes=n_classes,
+        n_clusters_per_class=1,
+        class_sep=1.3,
+        flip_y=0.02,
+        random_state=seed,
+    )
+
+    feature_cols = [f"f{i}" for i in range(n_features)]
+    df = pd.DataFrame(X, columns=feature_cols)
+    df[target_col] = y
+
+    # Add one non-numeric column to show that diagnostics can drop it safely.
+    df["non_numeric_id"] = [f"id_{i}" for i in range(n_samples)]
+
+    df.to_csv(csv_path, index=False)
+    print(f"[CREATED] {csv_path}: n={n_samples}, m={n_features}, classes={n_classes}")
+
+
+# ------------------------------------------------------------
+# User input: change these three lines for your own dataset
+# ------------------------------------------------------------
+DATA_FILE = "dummy_single_diagnostics.csv"
+TARGET_COL = "label"
+DATASET_NAME = "Dummy Single Dataset"
+
+# Create dummy CSV for immediate testing.
+# Comment this out when using your own existing CSV file.
+create_dummy_single_dataset(
+    csv_path=DATA_FILE,
+    target_col=TARGET_COL,
+    n_samples=120,
+    n_features=3000,
+    n_classes=3,
+    n_informative=150,
+    n_redundant=80,
+    seed=SEED,
+)
+
+OUT_CSV = f"{DATASET_NAME.replace(' ', '_').replace('/', '_')}_single_ordering_metrics.csv"
+
+
+# ------------------------------------------------------------
+# Make current folder importable, useful for local notebooks
+# ------------------------------------------------------------
+if os.getcwd() not in sys.path:
+    sys.path.insert(0, os.getcwd())
+
+
+# ------------------------------------------------------------
+# Import gotabpfn and diagnostics module
+# ------------------------------------------------------------
+import gotabpfn
+importlib.reload(gotabpfn)
+
+diag = gotabpfn.load_dataset_diagnostics_module()
+
+print("[OK] Imported gotabpfn package.")
+print("[OK] Loaded dataset diagnostics module.")
+
+
+# ------------------------------------------------------------
+# Patch diagnostics loader:
+# Drop target column, then keep numeric feature columns only.
+# ------------------------------------------------------------
+def load_numeric_csv_drop_non_numeric(
+    csv_path,
+    target_col=None,
+    standardize=True,
+):
+    df = pd.read_csv(csv_path)
+
+    target_col = diag._none_if_empty(target_col)
+
+    if target_col is not None:
+        if target_col not in df.columns:
+            raise ValueError(
+                f"Target column '{target_col}' not found in {csv_path}.\n"
+                f"Available columns: {list(df.columns)}"
+            )
+        df = df.drop(columns=[target_col])
+
+    numeric_cols = [
+        c for c in df.columns
+        if pd.api.types.is_numeric_dtype(df[c])
+    ]
+
+    dropped_cols = [
+        c for c in df.columns
+        if c not in numeric_cols
+    ]
+
+    if dropped_cols:
+        print(f"[INFO] {csv_path}: dropped non-numeric columns: {dropped_cols}")
+
+    if len(numeric_cols) < 2:
+        raise ValueError(
+            f"{csv_path}: expected at least two numeric feature columns after "
+            f"dropping target/non-numeric columns. Found {len(numeric_cols)}."
+        )
+
+    X = df[numeric_cols].to_numpy(dtype=np.float32)
+
+    X = np.nan_to_num(
+        X,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    ).astype(np.float32)
+
+    if standardize:
+        X = StandardScaler().fit_transform(X).astype(np.float32)
+
+    return X
+
+
+# Replace original loader inside diagnostics module.
+diag.load_numeric_csv = load_numeric_csv_drop_non_numeric
+
+
+# ------------------------------------------------------------
+# Check file
+# ------------------------------------------------------------
+if not os.path.exists(DATA_FILE):
+    raise FileNotFoundError(f"Missing dataset file: {DATA_FILE}")
+
+print(f"[OK] Dataset file found: {DATA_FILE}")
+
+
+# ------------------------------------------------------------
+# Run diagnostics for one dataset
+# ------------------------------------------------------------
+df_metrics = diag.analyze_csv_ordering_metrics(
+    csv_path=DATA_FILE,
+    target_col=TARGET_COL,
+    dataset_name=DATASET_NAME,
+    out_csv=OUT_CSV,
+    standardize=True,
+    verbose=True,
+)
+
+
+# ------------------------------------------------------------
+# Select final columns
+# ------------------------------------------------------------
+show_cols = [
+    "FOE_rank",
+    "dataset",
+    "category",
+    "n",
+    "m",
+    "rho",
+    "IDF_final",
+    "FOE",
+    "P_success",
+    "Delta_AdjCoh",
+    "Delta_HitRate",
+    "Delta_Cut",
+    "LES",
+    "AUC",
+]
+
+available_cols = [c for c in show_cols if c in df_metrics.columns]
+df_show = df_metrics[available_cols].copy()
+
+# Save selected table
+selected_csv = OUT_CSV.replace(".csv", "_selected_columns.csv")
+df_show.to_csv(selected_csv, index=False)
+
+print("\n[SAVED]")
+print(f"  - {OUT_CSV}")
+print(f"  - {selected_csv}")
+
+
+# ------------------------------------------------------------
+# Pretty display
+# ------------------------------------------------------------
+format_dict = {
+    "rho": "{:.4g}",
+    "IDF_final": "{:.4g}",
+    "FOE": "{:.4g}",
+    "P_success": "{:.4g}",
+    "Delta_AdjCoh": "{:.4g}",
+    "Delta_HitRate": "{:.4g}",
+    "Delta_Cut": "{:.4g}",
+    "LES": "{:.4g}",
+    "AUC": "{:.4g}",
+}
+
+try:
+    display(
+        df_show.style.format(
+            {k: v for k, v in format_dict.items() if k in df_show.columns}
+        )
+    )
+except NameError:
+    print(df_show)
+```
+
+Expected saved outputs:
+
+- `Dummy_Single_Dataset_single_ordering_metrics.csv`: full diagnostic table for the dataset.
+- `Dummy_Single_Dataset_single_ordering_metrics_selected_columns.csv`: compact selected-column summary.
+
+To use your own dataset, only change this block:
+
+```python
+DATA_FILE = "your_dataset.csv"
+TARGET_COL = "your_target_column"
+DATASET_NAME = "Your Dataset Name"
+```
+
+Then comment out or delete this dummy-data creation block:
+
+```python
+create_dummy_single_dataset(...)
+```
+
+The diagnostics automatically drop the target column and any non-numeric feature columns before computing ordering-related metrics.
+
 ## Acknowledgements
 
 This work was supported in part by the U.S. National Science Foundation under Awards #1920920, #2125872, and #2223793. We thank the anonymous ICML reviewers for their valuable feedback and suggestions.
