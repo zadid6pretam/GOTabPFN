@@ -2035,6 +2035,163 @@ for key, value in study.best_params.items():
     print(f"{key}: {value}")
 ```
 
+### Example 7: GO-LR as an Ordering Metaheuristic
+
+This example uses **GO-LR alone** as a feature ordering metaheuristic. Instead of running the full GOTabPFN pipeline, it tests the ordering module directly and reports ordering runtime, TSP-path cost, MinLA-style dispersion cost, the learned feature order, and the reordered feature table.
+
+This is useful when you want to inspect the ordering quality, compare GO-LR against other ordering/metaheuristic methods, or export a reordered version of the dataset for downstream analysis.
+
+```python
+# ============================================================
+# GO-LR standalone ordering test through the gotabpfn package
+# Tests ordering runtime, TSP path cost, MinLA cost, and reordered features.
+# Runtime may vary across machines/GPUs. 
+# ============================================================
+
+import os
+import sys
+import warnings
+import importlib
+import pandas as pd
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*pynvml package is deprecated.*",
+    category=FutureWarning,
+)
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*cumsum_cuda_kernel does not have a deterministic implementation.*",
+    category=UserWarning,
+)
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*Deterministic behavior was enabled.*CuBLAS.*",
+    category=UserWarning,
+)
+
+# ------------------------------------------------------------
+# Make current folder importable, useful for local notebooks
+# ------------------------------------------------------------
+if os.getcwd() not in sys.path:
+    sys.path.insert(0, os.getcwd())
+
+# ------------------------------------------------------------
+# Import package
+# ------------------------------------------------------------
+import gotabpfn
+importlib.reload(gotabpfn)
+
+print("[OK] Imported gotabpfn package.")
+
+# ------------------------------------------------------------
+# Config: GO-LR settings from the Colon ordering ablation
+# ------------------------------------------------------------
+SEED = 42
+DATA_FILE = "coloncancer_encoded.csv"  # change your dataset file name
+TARGET_COL = "label"                   # change your target column
+DATASET_NAME = "Colon"
+
+BEST_GO = {
+    "metric": "euclidean",
+    "num_clusters": 10,
+    "refine_passes": 3,
+    "direction_select": True,
+}
+
+OUT_PREFIX = "colon_golr_test"
+
+# ------------------------------------------------------------
+# Check files / package exports
+# ------------------------------------------------------------
+if not os.path.exists(DATA_FILE):
+    raise FileNotFoundError(f"Dataset not found: {DATA_FILE}")
+
+if getattr(gotabpfn, "run_golr_csv", None) is None:
+    raise ImportError(
+        "gotabpfn.run_golr_csv is not available. "
+        "Check your gotabpfn installation and package exports."
+    )
+
+print(f"[OK] Found dataset: {DATA_FILE}")
+print("[OK] Found gotabpfn.run_golr_csv")
+
+# ------------------------------------------------------------
+# Run GO-LR
+# ------------------------------------------------------------
+result = gotabpfn.run_golr_csv(
+    csv_path=DATA_FILE,
+    target_col=TARGET_COL,
+    dataset_name=DATASET_NAME,
+    metric=BEST_GO["metric"],
+    num_clusters=BEST_GO["num_clusters"],
+    refine=True,
+    direction_select=BEST_GO["direction_select"],
+    refine_passes=BEST_GO["refine_passes"],
+    bins=32,
+    seed=SEED,
+    standardize=True,
+    drop_non_numeric=True,
+    use_cpu_kmeans=True,   # safer for notebook testing
+    save_outputs=True,
+    out_prefix=OUT_PREFIX,
+)
+
+# ------------------------------------------------------------
+# Display metrics
+# ------------------------------------------------------------
+metrics = result["metrics"]
+metrics_df = pd.DataFrame([metrics])
+
+print("\n[GO-LR metrics]")
+display(metrics_df)
+
+# ------------------------------------------------------------
+# Display learned ordering preview
+# ------------------------------------------------------------
+ordering_df = result["ordering_df"]
+
+print("\n[Ordering preview]")
+display(ordering_df.head(20))
+
+# ------------------------------------------------------------
+# Display reordered feature table preview
+# ------------------------------------------------------------
+reordered_df = result["reordered_df"]
+
+print("\n[Reordered feature table preview]")
+display(reordered_df.head())
+
+# ------------------------------------------------------------
+# Access important values directly
+# ------------------------------------------------------------
+Pi_star = result["ordering"]
+runtime_sec = result["runtime_sec"]
+tsp_cost = result["tsp_path_cost"]
+minla_cost = result["minla_cost"]
+
+print("\n[Direct values]")
+print(f"Number of ordered features: {len(Pi_star)}")
+print(f"Runtime seconds: {runtime_sec:.6f}")
+print(f"TSP path cost: {tsp_cost:.6f}")
+print(f"MinLA cost: {minla_cost:.6f}")
+
+print("\n[SAVED]")
+print(f"  - {OUT_PREFIX}_reordered.csv")
+print(f"  - {OUT_PREFIX}_ordering.csv")
+print(f"  - {OUT_PREFIX}_metrics.json")
+```
+
+Expected saved outputs:
+
+- `colon_golr_test_reordered.csv`: the dataset with features reordered by GO-LR.
+- `colon_golr_test_ordering.csv`: the learned feature order.
+- `colon_golr_test_metrics.json`: runtime, TSP-path cost, MinLA cost, and related ordering diagnostics.
+
+In this example, GO-LR is used as a standalone ordering metaheuristic. It constructs a graph over features, initializes an ordering using a TSP path-style heuristic, and then refines the order under a MinLA-style dispersion objective. Lower TSP-path and MinLA costs indicate stronger ordering quality under the corresponding surrogate criteria.
+
 ## Acknowledgements
 
 This work was supported in part by the U.S. National Science Foundation under Awards #1920920, #2125872, and #2223793. We thank the anonymous ICML reviewers for their valuable feedback and suggestions.
