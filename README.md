@@ -100,7 +100,7 @@ Representative notebooks include:
 
 
 - **`GOTabPFN_PIP_Install_Check.ipynb`**  
-  Minimal notebook for checking the installed `gotabpfn` package after `pip install`. It will verify imports, initialize core modules, and run a toy workflow.
+  Minimal notebook for checking the installed `gotabpfn` package after `pip install` in Google Colab. It will verify imports, initialize core modules, and run a toy workflow.
 
 ### Main dependencies
 
