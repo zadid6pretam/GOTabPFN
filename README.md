@@ -709,7 +709,7 @@ print(f"Accuracy : {np.mean(accs):.4f} ± {np.std(accs, ddof=1):.4f}")
 print(f"Macro-F1 : {np.mean(f1s):.4f} ± {np.std(f1s, ddof=1):.4f}")
 print(f"AUC      : {np.mean(aucs):.4f} ± {np.std(aucs, ddof=1):.4f}")
 ```
-
+> **NB.** In our experiments, GO-LR is used as an unsupervised dataset-level feature ordering step. For each dataset and hyperparameter setting, the global feature order is learned from the full unlabeled feature matrix `X`, without using the target labels `y`. The learned order is then kept fixed during repeated cross-validation, where NSC is configured on each training split and the TabPFN head is fit only on `(Z_train, y_train)`. Therefore, the evaluation does not leak validation labels into the model or the ordering procedure. This protocol should be interpreted as unsupervised transductive feature ordering: validation feature values may contribute to the global feature order, but validation labels are never used.
 
 ### Example 2: Binary Classification with Optuna Hyperparameter Tuning
 
