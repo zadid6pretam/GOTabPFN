@@ -2192,6 +2192,362 @@ Expected saved outputs:
 
 In this example, GO-LR is used as a standalone ordering metaheuristic. It constructs a graph over features, initializes an ordering using a TSP path-style heuristic, and then refines the order under a MinLA-style dispersion objective. Lower TSP-path and MinLA costs indicate stronger ordering quality under the corresponding surrogate criteria.
 
+### Example 8: Checking NSC Compression Variants
+
+This example tests the four NSC compression variants implemented in GOTabPFN:
+
+- **NSC-pSP**: PCA-based intrinsic-dimensionality rule for selecting `M` + SegPCA pooling.
+- **NSC-SP**: fixed `M` + SegPCA pooling.
+- **NSC-P**: PCA-based intrinsic-dimensionality rule for selecting `M` + descriptor pooling.
+- **NSC**: fixed `M` + descriptor pooling.
+
+The script first checks whether a GO-LR ordering file already exists. If not, it runs GO-LR on the dataset and saves the ordering. Then it applies all four NSC variants using the same ordered feature axis and reports compression statistics such as the original feature count, compressed feature count, selected `M`, compression ratio, intrinsic dimensionality estimate, and runtime.
+
+```python
+# ============================================================
+# Example 8: Checking NSC Compression Variants
+# Tests all four NSC variants:
+#   - NSC-pSP
+#   - NSC-SP
+#   - NSC-P
+#   - NSC
+# ============================================================
+
+import os
+import sys
+import gc
+import warnings
+import importlib
+
+import numpy as np
+import pandas as pd
+import torch
+
+# ------------------------------------------------------------
+# Optional environment settings
+# ------------------------------------------------------------
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*pynvml package is deprecated.*",
+    category=FutureWarning,
+)
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*cumsum_cuda_kernel does not have a deterministic implementation.*",
+    category=UserWarning,
+)
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*Deterministic behavior was enabled.*CuBLAS.*",
+    category=UserWarning,
+)
+
+# ------------------------------------------------------------
+# Make current folder importable, useful for local notebooks
+# ------------------------------------------------------------
+if os.getcwd() not in sys.path:
+    sys.path.insert(0, os.getcwd())
+
+# ------------------------------------------------------------
+# Import package
+# ------------------------------------------------------------
+import gotabpfn
+importlib.reload(gotabpfn)
+
+print("[OK] Imported gotabpfn package.")
+
+# ------------------------------------------------------------
+# User settings
+# ------------------------------------------------------------
+DATA_FILE = "coloncancer_encoded.csv"  # change your dataset file name
+TARGET_COL = "label"                   # change your target column
+DATASET_NAME = "Colon"
+
+ORDERING_CSV = "colon_golr_ordering.csv"
+SEED = 42
+
+# Common NSC settings
+NSC_COMMON = {
+    "segmentation": "equal_mass",
+    "m_rule": "idf",
+    "gamma": 1.7570143129240916,
+    "beta": 0.2244046472232107,
+    "M_min": 64,
+    "M_max": 384,
+    "l_min": 16,
+    "standardize_input": True,
+    "drop_non_numeric": True,
+    "mode": "flatten",
+    "device": "cuda" if torch.cuda.is_available() else "cpu",
+    "save_outputs": True,
+}
+
+# Descriptor-pooling settings for NSC-P and NSC
+DESC_COMMON = {
+    "descriptor": "basic",
+    "pooling": "learn_free",
+}
+
+TAU = 0.99
+
+print(f"[INFO] Using device: {NSC_COMMON['device']}")
+
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
+def cleanup():
+    gc.collect()
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+        torch.cuda.empty_cache()
+
+
+def maybe_make_golr_ordering():
+    """
+    Use an existing GO-LR ordering file if available.
+    Otherwise, run GO-LR and save a new ordering.
+    If GO-LR wrapper is unavailable, return None and NSC uses identity ordering.
+    """
+    if os.path.exists(ORDERING_CSV):
+        print(f"[OK] Found ordering file: {ORDERING_CSV}")
+        return ORDERING_CSV
+
+    if getattr(gotabpfn, "run_golr_csv", None) is None:
+        print("[WARN] gotabpfn.run_golr_csv is unavailable.")
+        print("[WARN] Falling back to identity ordering for all NSC variants.")
+        return None
+
+    print(f"[INFO] {ORDERING_CSV} not found. Running GO-LR...")
+
+    gotabpfn.run_golr_csv(
+        csv_path=DATA_FILE,
+        target_col=TARGET_COL,
+        dataset_name=DATASET_NAME,
+        metric="euclidean",
+        num_clusters=10,
+        refine=True,
+        direction_select=True,
+        refine_passes=3,
+        bins=32,
+        seed=SEED,
+        standardize=True,
+        drop_non_numeric=True,
+        use_cpu_kmeans=True,
+        save_outputs=True,
+        out_prefix="colon_golr",
+    )
+
+    if os.path.exists(ORDERING_CSV):
+        print(f"[OK] Created ordering file: {ORDERING_CSV}")
+        return ORDERING_CSV
+
+    print("[WARN] GO-LR ran, but ordering file was not found.")
+    print("[WARN] Falling back to identity ordering for all NSC variants.")
+    return None
+
+
+# ------------------------------------------------------------
+# Check dataset and package exports
+# ------------------------------------------------------------
+if not os.path.exists(DATA_FILE):
+    raise FileNotFoundError(f"Missing dataset file: {DATA_FILE}")
+
+required_exports = [
+    "run_nsc_psp_csv",
+    "run_nsc_sp_csv",
+    "run_nsc_p_csv",
+    "run_nsc_csv",
+]
+
+missing_exports = [x for x in required_exports if getattr(gotabpfn, x, None) is None]
+if missing_exports:
+    raise ImportError(
+        "Missing required gotabpfn exports:\n"
+        + "\n".join([f"  - {x}" for x in missing_exports])
+    )
+
+print(f"[OK] Found dataset: {DATA_FILE}")
+print("[OK] Found all NSC wrapper exports.")
+
+ordering_csv = maybe_make_golr_ordering()
+
+# ------------------------------------------------------------
+# Run all four NSC variants
+# ------------------------------------------------------------
+results = {}
+
+print("\n" + "=" * 80)
+print("Running NSC-pSP")
+print("=" * 80)
+
+results["NSC-pSP"] = gotabpfn.run_nsc_psp_csv(
+    csv_path=DATA_FILE,
+    target_col=TARGET_COL,
+    ordering_csv=ordering_csv,
+    dataset_name=DATASET_NAME,
+    tau=TAU,
+    out_prefix="colon_nsc_psp_test",
+    **NSC_COMMON,
+)
+
+M_ref = int(results["NSC-pSP"]["metrics"]["M_selected"])
+d_hat_ref = results["NSC-pSP"]["metrics"].get("d_hat_pca", None)
+
+print(f"\n[REFERENCE from NSC-pSP] M_ref={M_ref}, d_hat_ref={d_hat_ref}")
+
+cleanup()
+
+print("\n" + "=" * 80)
+print("Running NSC-SP")
+print("=" * 80)
+
+results["NSC-SP"] = gotabpfn.run_nsc_sp_csv(
+    csv_path=DATA_FILE,
+    target_col=TARGET_COL,
+    ordering_csv=ordering_csv,
+    dataset_name=DATASET_NAME,
+    M=M_ref,
+    out_prefix="colon_nsc_sp_test",
+    **NSC_COMMON,
+)
+
+cleanup()
+
+print("\n" + "=" * 80)
+print("Running NSC-P")
+print("=" * 80)
+
+results["NSC-P"] = gotabpfn.run_nsc_p_csv(
+    csv_path=DATA_FILE,
+    target_col=TARGET_COL,
+    ordering_csv=ordering_csv,
+    dataset_name=DATASET_NAME,
+    tau=TAU,
+    out_prefix="colon_nsc_p_test",
+    **NSC_COMMON,
+    **DESC_COMMON,
+)
+
+cleanup()
+
+print("\n" + "=" * 80)
+print("Running NSC")
+print("=" * 80)
+
+results["NSC"] = gotabpfn.run_nsc_csv(
+    csv_path=DATA_FILE,
+    target_col=TARGET_COL,
+    ordering_csv=ordering_csv,
+    dataset_name=DATASET_NAME,
+    M=M_ref,
+    estimate_d_hat=False,
+    out_prefix="colon_nsc_test",
+    **NSC_COMMON,
+    **DESC_COMMON,
+)
+
+cleanup()
+
+# ------------------------------------------------------------
+# Summary table
+# ------------------------------------------------------------
+summary_rows = []
+
+for name, res in results.items():
+    metrics = res["metrics"].copy()
+    metrics["variant"] = name
+    summary_rows.append(metrics)
+
+summary_df = pd.DataFrame(summary_rows)
+
+preferred_cols = [
+    "variant",
+    "dataset",
+    "n",
+    "m_original",
+    "m_compressed",
+    "compression_ratio",
+    "M_selected",
+    "idf",
+    "d_hat_pca",
+    "segmentation",
+    "m_rule",
+    "descriptor",
+    "pooling",
+    "runtime_sec",
+    "ordering_source",
+]
+
+available_cols = [c for c in preferred_cols if c in summary_df.columns]
+remaining_cols = [c for c in summary_df.columns if c not in available_cols]
+summary_df = summary_df[available_cols + remaining_cols]
+
+print("\n" + "=" * 80)
+print("FINAL SUMMARY")
+print("=" * 80)
+
+try:
+    display(
+        summary_df.style.format(
+            {
+                "compression_ratio": "{:.4g}",
+                "idf": "{:.4g}",
+                "d_hat_pca": "{:.4g}",
+                "runtime_sec": "{:.4g}",
+            },
+            na_rep="NA",
+        )
+    )
+except NameError:
+    print(summary_df)
+
+summary_df.to_csv("colon_all_nsc_variants_summary.csv", index=False)
+
+# ------------------------------------------------------------
+# Preview compressed outputs
+# ------------------------------------------------------------
+for name, res in results.items():
+    print(f"\n[{name}] compressed_df preview:")
+    try:
+        display(res["compressed_df"].head())
+    except NameError:
+        print(res["compressed_df"].head())
+
+print("\n[SAVED SUMMARY]")
+print("  - colon_all_nsc_variants_summary.csv")
+
+print("\n[SAVED COMPRESSED FILES]")
+print("  - colon_nsc_psp_test_compressed.csv")
+print("  - colon_nsc_sp_test_compressed.csv")
+print("  - colon_nsc_p_test_compressed.csv")
+print("  - colon_nsc_test_compressed.csv")
+
+print("\n[SAVED SEGMENTS/METRICS]")
+print("  - *_segments.csv")
+print("  - *_metrics.json")
+```
+
+Expected saved outputs:
+
+- `colon_all_nsc_variants_summary.csv`: summary table comparing all NSC variants.
+- `colon_nsc_psp_test_compressed.csv`: compressed features from NSC-pSP.
+- `colon_nsc_sp_test_compressed.csv`: compressed features from NSC-SP.
+- `colon_nsc_p_test_compressed.csv`: compressed features from NSC-P.
+- `colon_nsc_test_compressed.csv`: compressed features from NSC.
+- `*_segments.csv`: segment boundaries used by each compression variant.
+- `*_metrics.json`: compression statistics and runtime diagnostics.
+
+This example is intended for checking the compression stage independently for final prediction. It helps verify that GO-LR ordering can be reused by different NSC variants and that high-dimensional feature matrices can be converted into compact meta-feature representations before downstream modeling.
+
 ## Acknowledgements
 
 This work was supported in part by the U.S. National Science Foundation under Awards #1920920, #2125872, and #2223793. We thank the anonymous ICML reviewers for their valuable feedback and suggestions.
