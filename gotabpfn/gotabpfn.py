@@ -1190,7 +1190,7 @@ def run_gotabpfn_csv(
         CSV -> preprocessing -> GO-LR ordering -> NSC-pSP compression -> TabPFN-2.5 head
 
     This wrapper is designed to match the manual implementation style:
-      - full-feature GO-LR ordering once before CV
+      - full-feature GO-LR ordering once before CV by default
       - GPU KMeans attempt with CPU fallback
       - fold-wise NSC-pSP compression
       - fold-wise TabPFN-2.5 head
@@ -1239,18 +1239,6 @@ def run_gotabpfn_csv(
     # -----------------------
     # Learn GO-LR feature ordering once
     # -----------------------
-    m_full = X.shape[1]
-
-    rng = np.random.default_rng(seed + 999)
-
-    if go_feat_subsample is not None and int(go_feat_subsample) < m_full:
-        feat_idx = rng.choice(m_full, size=int(go_feat_subsample), replace=False)
-        feat_idx.sort()
-    else:
-        feat_idx = np.arange(m_full)
-
-    X_go = X[:, feat_idx]
-
     go = GraphFeatureOrdering(
         num_clusters=go_num_clusters,
         metric=go_metric,
@@ -1258,6 +1246,28 @@ def run_gotabpfn_csv(
         direction_select=go_direction_select,
         refine_passes=go_refine_passes,
     )
+
+    if go_feat_subsample is None:
+        # Manual-equivalent path: learn GO-LR directly on full X.
+        X_go = X
+        feat_idx = None
+    else:
+        # Optional feature subsampling path for very high-dimensional cases.
+        # This is not used by the validated Colon example.
+        m_full = X.shape[1]
+        rng = np.random.default_rng(seed + 999)
+
+        go_feat_subsample = int(go_feat_subsample)
+        if go_feat_subsample <= 0:
+            raise ValueError("go_feat_subsample must be a positive integer or None.")
+
+        if go_feat_subsample >= m_full:
+            X_go = X
+            feat_idx = None
+        else:
+            feat_idx = rng.choice(m_full, size=go_feat_subsample, replace=False)
+            feat_idx.sort()
+            X_go = X[:, feat_idx]
 
     if go_fallback_cpu_kmeans and not go_use_cpu_kmeans:
         try:
@@ -1269,7 +1279,6 @@ def run_gotabpfn_csv(
             )
             golr_kmeans_mode = "gpu"
         except Exception:
-            _cleanup_cuda_for_wrapper()
             Pi_sub, local_orderings, graphs, centroids = go.fit(
                 X_go,
                 seed=seed,
@@ -1286,16 +1295,20 @@ def run_gotabpfn_csv(
         )
         golr_kmeans_mode = "cpu" if go_use_cpu_kmeans else "gpu"
 
-    ordered_subset = feat_idx[np.array(Pi_sub, dtype=np.int64)].tolist()
-
-    if len(feat_idx) < m_full:
-        remaining = np.setdiff1d(np.arange(m_full), feat_idx, assume_unique=False)
-        Pi_star = ordered_subset + remaining.tolist()
+    if feat_idx is None:
+        Pi_star = list(map(int, Pi_sub))
     else:
-        Pi_star = ordered_subset
+        ordered_subset = feat_idx[np.array(Pi_sub, dtype=np.int64)].tolist()
+        remaining = np.setdiff1d(np.arange(m), feat_idx, assume_unique=False)
+        Pi_star = ordered_subset + remaining.tolist()
+        Pi_star = list(map(int, Pi_star))
 
-    Pi_star = list(map(int, Pi_star))
     ordered_feature_names = [feature_names[i] for i in Pi_star]
+
+    if verbose:
+        print(f"Learned GO-LR order length: {len(Pi_star)}")
+        print("First 10 ordered features:")
+        print(ordered_feature_names[:10])
 
     # -----------------------
     # CV setup
@@ -1391,11 +1404,11 @@ def run_gotabpfn_csv(
             device=device,
         )
 
+        X_tr_t = torch.from_numpy(X_tr)
+
         deltas = None
         if str(nsc_segmentation).lower() in {"equal_mass", "largest_jump"}:
             deltas = _compute_deltas_adjacent_corr_for_wrapper(X_tr, Pi_star)
-
-        X_tr_t = torch.from_numpy(X_tr)
 
         nsc.configure(
             Pi_star=Pi_star,
@@ -1407,6 +1420,9 @@ def run_gotabpfn_csv(
         Z_tr = nsc.compress(X_tr_t, mode="flatten").cpu().numpy()
         Z_va = nsc.compress(torch.from_numpy(X_va), mode="flatten").cpu().numpy()
 
+        if verbose:
+            print(f"Fold {fold_id:02d} Z_tr shape: {Z_tr.shape}")
+
         head = TabPFN25Head(head_cfg)
         head.fit(Z_tr, y_tr)
 
@@ -1415,7 +1431,7 @@ def run_gotabpfn_csv(
             pred = np.argmax(P, axis=1)
 
             acc = float(accuracy_score(y_va, pred))
-            f1m = float(f1_score(y_va, pred, average="macro", zero_division=0))
+            f1m = float(f1_score(y_va, pred, average="macro"))
 
             row = {
                 "fold": fold_id,
@@ -1496,8 +1512,6 @@ def run_gotabpfn_csv(
                         "true_value": float(yt),
                         "predicted_value": float(yp),
                     })
-
-        _cleanup_cuda_for_wrapper()
 
     metrics_df = pd.DataFrame(rows)
     predictions_df = pd.DataFrame(pred_rows)
