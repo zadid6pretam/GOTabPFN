@@ -30,7 +30,7 @@ import importlib.util
 import sys
 
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 
 # ============================================================
@@ -79,6 +79,7 @@ GraphFeatureOrdering = getattr(_core, "GraphFeatureOrdering", None)
 pidf_segpca = getattr(_core, "pidf_segpca", None)
 TabPFN25Head = getattr(_core, "TabPFN25Head", None)
 TabPFN25Config = getattr(_core, "TabPFN25Config", None)
+run_gotabpfn_csv = getattr(_core, "run_gotabpfn_csv", None)
 
 
 # ============================================================
@@ -209,6 +210,7 @@ __all__ = [
     "pidf_segpca",
     "TabPFN25Head",
     "TabPFN25Config",
+    "run_gotabpfn_csv",
 
     # GO-LR
     "GraphFeatureOrdering_GO_LR",
