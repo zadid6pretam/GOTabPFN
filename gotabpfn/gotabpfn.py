@@ -968,6 +968,7 @@ class TabPFN25Head(nn.Module):
 # ============================================================
 # CSV-level GOTabPFN convenience wrapper
 # ============================================================
+# ============================================================
 
 import gc
 import random
@@ -1060,14 +1061,18 @@ def _preprocess_csv_for_gotabpfn(
       - LabelEncoder
       - numeric features only by default
       - median imputation + 0 fallback
-      - StandardScaler
+      - StandardScaler on X_df.values (float64 input, cast result to float32)
 
     Regression:
       - target converted to numeric
-      - missing target filled with target median, matching manual DrivFace script
+      - missing target filled with target median
       - numeric features only by default
       - median imputation + 0 fallback
-      - StandardScaler
+      - StandardScaler on X_df.values (float64 input, cast result to float32)
+
+    Note: StandardScaler is fit on X_df.values (float64) before casting to
+    float32. Casting first would introduce tiny numeric differences that can
+    alter GO-LR ordering / NSC segmentation on HDLSS datasets.
     """
     df = pd.read_csv(csv_path)
 
@@ -1134,12 +1139,21 @@ def _preprocess_csv_for_gotabpfn(
             "task_type must be one of: 'classification', 'binary', 'multiclass', 'regression'."
         )
 
-    X = X_df.to_numpy(dtype=np.float32)
+    # Match manual script exactly:
+    #     scaler = StandardScaler()
+    #     X = scaler.fit_transform(X_df.values).astype(np.float32)
+    #
+    # X_df.values is float64; StandardScaler sees float64, then we cast.
+    # Do NOT cast to float32 before StandardScaler — tiny numeric differences
+    # from float32 rounding can change GO-LR ordering on HDLSS datasets.
+    X_raw = X_df.values  # float64
 
     scaler = None
     if standardize:
         scaler = StandardScaler()
-        X = scaler.fit_transform(X).astype(np.float32)
+        X = scaler.fit_transform(X_raw).astype(np.float32)
+    else:
+        X = X_raw.astype(np.float32)
 
     return X, y, X_df.columns.tolist(), label_encoder, scaler, task_type_final, num_classes
 
@@ -1152,7 +1166,7 @@ def run_gotabpfn_csv(
 
     # Evaluation
     cv="5x5",
-    test_size=0.30,  # kept for API compatibility; not used in manual-style CV
+    test_size=0.30,   # kept for API compatibility; not used in manual-style CV
     seed=42,
 
     # GO-LR
@@ -1174,6 +1188,9 @@ def run_gotabpfn_csv(
     nsc_M_min=32,
     nsc_M_max=512,
     nsc_l_min=8,
+    
+   
+    nsc_bypass_if_m_leq=0,
     assume_standardized=True,
 
     # TabPFN
@@ -1189,18 +1206,28 @@ def run_gotabpfn_csv(
 
         CSV -> preprocessing -> GO-LR ordering -> NSC-pSP compression -> TabPFN-2.5 head
 
+    This wrapper matches the manual implementation style exactly:
+      - global StandardScaler on X_df.values (float64), result cast to float32
+      - full-feature GO-LR ordering computed once on full X before CV
+      - GPU KMeans attempt with optional CPU fallback
+      - fold-wise NSC-pSP: configure on X_tr only, compress X_tr and X_va
+      - fold-wise TabPFN-2.5 head: fit on Z_tr, predict on Z_va
+      - binary, multiclass, and regression in separate branches
+      - explicit GPU memory cleanup at the end of each fold
+
+    Parameters
+    ----------
+    nsc_bypass_if_m_leq : int, default=0
+        Passed to pidf_segpca. When m <= this value, choose_M returns M=m
+        (no compression). Set to 0 to always compress, matching the manual
+        approach. The pidf_segpca class default is 400 — leaving it at 400
+        in the wrapper disables compression for nearly all tabular datasets.
+
     Returns
     -------
-    dict with:
-        - summary
-        - metrics_df
-        - predictions_df
-        - ordering
-        - ordered_feature_names
-        - task_type
-        - num_features
-        - num_samples
-        - elapsed_time_sec
+    dict with keys:
+        summary, metrics_df, predictions_df, ordering, ordered_feature_names,
+        task_type, num_features, num_samples, elapsed_time_sec, golr_kmeans_mode
     """
     _seed_everything_for_wrapper(seed)
 
@@ -1229,7 +1256,8 @@ def run_gotabpfn_csv(
         print(f"Using device: {device}")
 
     # -----------------------
-    # Learn GO-LR feature ordering once
+    # Learn GO-LR feature ordering once on full X
+    # (matches manual approach: ordering is a global preprocessing step)
     # -----------------------
     go = GraphFeatureOrdering(
         num_clusters=go_num_clusters,
@@ -1238,6 +1266,9 @@ def run_gotabpfn_csv(
         direction_select=go_direction_select,
         refine_passes=go_refine_passes,
     )
+
+    # save display value before the variable is potentially mutated below
+    _go_feat_subsample_display = go_feat_subsample
 
     if go_feat_subsample is None:
         X_go = X
@@ -1337,7 +1368,7 @@ def run_gotabpfn_csv(
             random_state=int(tabpfn_seed),
         )
 
-    else:
+    else:  # regression
         if cv == "5x5":
             splitter = RepeatedKFold(
                 n_splits=5,
@@ -1380,6 +1411,10 @@ def run_gotabpfn_csv(
         X_tr, X_va = X[tr_idx], X[va_idx]
         y_tr, y_va = y[tr_idx], y[va_idx]
 
+        # FIX 1: pass nsc_bypass_if_m_leq explicitly.
+        # Without this, pidf_segpca defaults to bypass_if_m_leq=400, which
+        # returns M=m (no compression) for m<=400, silently changing Z shape
+        # and values vs the manual approach.
         nsc = pidf_segpca(
             segmentation=nsc_segmentation,
             l_min=int(nsc_l_min),
@@ -1389,6 +1424,7 @@ def run_gotabpfn_csv(
             tau=float(nsc_tau),
             M_min=int(nsc_M_min),
             M_max=int(nsc_M_max),
+            bypass_if_m_leq=int(nsc_bypass_if_m_leq),  # FIX 1
             assume_standardized=bool(assume_standardized),
             device=device,
         )
@@ -1413,7 +1449,7 @@ def run_gotabpfn_csv(
             print(f"Fold {fold_id:02d} Z_tr shape: {Z_tr.shape}")
 
         # ------------------------------------------------------------
-        # Binary classification branch: separated to match manual script
+        # Binary classification branch
         # ------------------------------------------------------------
         if task_type_final == "binary":
             head = TabPFN25Head(head_cfg)
@@ -1450,7 +1486,6 @@ def run_gotabpfn_csv(
                     label_encoder.inverse_transform(pred)
                     if label_encoder is not None else pred
                 )
-
                 for idx, yt, yp in zip(va_idx, true_labels, pred_labels):
                     pred_rows.append({
                         "row_index": int(idx),
@@ -1497,7 +1532,6 @@ def run_gotabpfn_csv(
                     label_encoder.inverse_transform(pred)
                     if label_encoder is not None else pred
                 )
-
                 for idx, yt, yp in zip(va_idx, true_labels, pred_labels):
                     pred_rows.append({
                         "row_index": int(idx),
@@ -1543,6 +1577,15 @@ def run_gotabpfn_csv(
                         "predicted_value": float(yp),
                     })
 
+        # FIX 2: explicit cleanup at the end of each fold.
+        # nsc holds registered CUDA buffers (mu_i, v1_i per segment);
+        # head holds the fitted TabPFN clf. Deleting them + emptying the
+        # cache prevents GPU memory from accumulating across 25 folds.
+        del nsc, head, Z_tr, Z_va, X_tr_t
+        if deltas is not None:
+            del deltas
+        _cleanup_cuda_for_wrapper()
+
     metrics_df = pd.DataFrame(rows)
     predictions_df = pd.DataFrame(pred_rows)
     elapsed_time_sec = time.perf_counter() - t0
@@ -1559,9 +1602,12 @@ def run_gotabpfn_csv(
         f"Original numeric features: {m}",
         f"GO-LR metric: {go_metric}",
         f"GO-LR KMeans mode: {golr_kmeans_mode}",
-        f"GO-LR feature subsample: {go_feat_subsample if go_feat_subsample is not None else 'full'}",
+        # FIX 3: use the pre-mutation display variable
+        f"GO-LR feature subsample: "
+        f"{'full' if _go_feat_subsample_display is None else int(_go_feat_subsample_display)}",
         f"NSC segmentation: {nsc_segmentation}",
         f"NSC M rule: {nsc_m_rule}",
+        f"NSC bypass_if_m_leq: {nsc_bypass_if_m_leq}",
         f"Device: {device}",
         f"Elapsed time: {elapsed_time_sec:.2f} seconds",
         "",
