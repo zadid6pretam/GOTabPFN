@@ -1237,65 +1237,65 @@ def run_gotabpfn_csv(
         print(f"Using device: {device}")
 
     # -----------------------
-# Learn GO-LR feature ordering once
-# -----------------------
-m_full = X.shape[1]
+    # Learn GO-LR feature ordering once
+    # -----------------------
+    m_full = X.shape[1]
 
-rng = np.random.default_rng(seed + 999)
+    rng = np.random.default_rng(seed + 999)
 
-if go_feat_subsample is not None and int(go_feat_subsample) < m_full:
-    feat_idx = rng.choice(m_full, size=int(go_feat_subsample), replace=False)
-    feat_idx.sort()
-else:
-    feat_idx = np.arange(m_full)
+    if go_feat_subsample is not None and int(go_feat_subsample) < m_full:
+        feat_idx = rng.choice(m_full, size=int(go_feat_subsample), replace=False)
+        feat_idx.sort()
+    else:
+        feat_idx = np.arange(m_full)
 
-X_go = X[:, feat_idx]
+    X_go = X[:, feat_idx]
 
-go = GraphFeatureOrdering(
-    num_clusters=go_num_clusters,
-    metric=go_metric,
-    refine=go_refine,
-    direction_select=go_direction_select,
-    refine_passes=go_refine_passes,
-)
-
-if go_fallback_cpu_kmeans and not go_use_cpu_kmeans:
-    try:
-        Pi_sub, local_orderings, graphs, centroids = go.fit(
-            X_go,
-            seed=seed,
-            deterministic=True,
-            use_cpu_kmeans=False,
-        )
-        golr_kmeans_mode = "gpu"
-    except Exception:
-        _cleanup_cuda_for_wrapper()
-        Pi_sub, local_orderings, graphs, centroids = go.fit(
-            X_go,
-            seed=seed,
-            deterministic=True,
-            use_cpu_kmeans=True,
-        )
-        golr_kmeans_mode = "cpu_fallback"
-else:
-    Pi_sub, local_orderings, graphs, centroids = go.fit(
-        X_go,
-        seed=seed,
-        deterministic=True,
-        use_cpu_kmeans=go_use_cpu_kmeans,
+    go = GraphFeatureOrdering(
+        num_clusters=go_num_clusters,
+        metric=go_metric,
+        refine=go_refine,
+        direction_select=go_direction_select,
+        refine_passes=go_refine_passes,
     )
-    golr_kmeans_mode = "cpu" if go_use_cpu_kmeans else "gpu"
 
-ordered_subset = feat_idx[np.array(Pi_sub, dtype=np.int64)].tolist()
+    if go_fallback_cpu_kmeans and not go_use_cpu_kmeans:
+        try:
+            Pi_sub, local_orderings, graphs, centroids = go.fit(
+                X_go,
+                seed=seed,
+                deterministic=True,
+                use_cpu_kmeans=False,
+            )
+            golr_kmeans_mode = "gpu"
+        except Exception:
+            _cleanup_cuda_for_wrapper()
+            Pi_sub, local_orderings, graphs, centroids = go.fit(
+                X_go,
+                seed=seed,
+                deterministic=True,
+                use_cpu_kmeans=True,
+            )
+            golr_kmeans_mode = "cpu_fallback"
+    else:
+        Pi_sub, local_orderings, graphs, centroids = go.fit(
+            X_go,
+            seed=seed,
+            deterministic=True,
+            use_cpu_kmeans=go_use_cpu_kmeans,
+        )
+        golr_kmeans_mode = "cpu" if go_use_cpu_kmeans else "gpu"
 
-if len(feat_idx) < m_full:
-    remaining = np.setdiff1d(np.arange(m_full), feat_idx, assume_unique=False)
-    Pi_star = ordered_subset + remaining.tolist()
-else:
-    Pi_star = ordered_subset
+    ordered_subset = feat_idx[np.array(Pi_sub, dtype=np.int64)].tolist()
 
-Pi_star = list(map(int, Pi_star))
-ordered_feature_names = [feature_names[i] for i in Pi_star]
+    if len(feat_idx) < m_full:
+        remaining = np.setdiff1d(np.arange(m_full), feat_idx, assume_unique=False)
+        Pi_star = ordered_subset + remaining.tolist()
+    else:
+        Pi_star = ordered_subset
+
+    Pi_star = list(map(int, Pi_star))
+    ordered_feature_names = [feature_names[i] for i in Pi_star]
 
     # -----------------------
     # CV setup
