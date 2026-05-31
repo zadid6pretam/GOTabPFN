@@ -1656,7 +1656,7 @@ for key, value in study.best_params.items():
     print(f"{key}: {value}")
 ```
 
-### Example 6: Multiclass Classification with the single wrapper
+### Example 6: Multiclass Classification with the Single Wrapper
 
 This example runs GOTabPFN on the ORL face dataset (`orlraws10P`) for multiclass classification using the high-level `run_gotabpfn_csv` wrapper. The pipeline performs GO-LR feature ordering, NSC-pSP compression, and TabPFN-2.5 prediction under 5×5 repeated stratified cross-validation.
 
@@ -1684,6 +1684,7 @@ GO_METRIC = "cosine"
 GO_NUM_CLUSTERS = 5
 GO_REFINE_PASSES = 1
 GO_DIRECTION_SELECT = False
+GO_FEAT_SUBSAMPLE = 3000
 
 
 # -----------------------
@@ -1721,6 +1722,7 @@ results = run_gotabpfn_csv(
     go_refine=True,
     go_direction_select=GO_DIRECTION_SELECT,
     go_refine_passes=GO_REFINE_PASSES,
+    go_feat_subsample=GO_FEAT_SUBSAMPLE,
 
     # Try GPU KMeans first, then fall back to CPU KMeans if needed
     go_use_cpu_kmeans=False,
@@ -2298,7 +2300,140 @@ for key, value in study.best_params.items():
     print(f"{key}: {value}")
 ```
 
+### Example 9: Regression with the CSV Wrapper
 
+This example runs GOTabPFN on the DrivFace regression dataset using the high-level `run_gotabpfn_csv` wrapper. The pipeline performs GO-LR feature ordering, NSC-pSP compression, and TabPFN-2.5 regression under 5×5 repeated cross-validation.
+
+```python
+import numpy as np
+import torch
+
+from gotabpfn import run_gotabpfn_csv
+
+
+# -----------------------
+# User settings
+# -----------------------
+DATA_FILE = "drivface.csv"  # change this to your dataset file name
+TARGET_COL = "angle"        # change this to your regression target column
+SEED = 42
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# -----------------------
+# Fixed GO-LR hyperparameters
+# -----------------------
+GO_METRIC = "manhattan"
+GO_NUM_CLUSTERS = 5
+GO_REFINE_PASSES = 1
+GO_DIRECTION_SELECT = False
+GO_FEAT_SUBSAMPLE = 2000
+
+
+# -----------------------
+# Fixed NSC-pSP hyperparameters
+# -----------------------
+NSC_SEGMENTATION = "largest_jump"
+NSC_M_RULE = "idf"
+NSC_TAU = 0.99
+NSC_GAMMA = 2.654390393837633
+NSC_BETA = 0.043192175152615336
+NSC_MMIN = 16
+NSC_MMAX = 256
+NSC_LMIN = 12
+ASSUME_STANDARDIZED = True
+
+TABPFN_SEED = 3
+
+
+# -----------------------
+# Run GOTabPFN
+# -----------------------
+results = run_gotabpfn_csv(
+    csv_path=DATA_FILE,
+    target_col=TARGET_COL,
+    task_type="regression",
+    non_numeric="drop",
+
+    # 5x5 repeated cross-validation
+    cv="5x5",
+    seed=SEED,
+
+    # GO-LR settings
+    go_metric=GO_METRIC,
+    go_num_clusters=GO_NUM_CLUSTERS,
+    go_refine=True,
+    go_direction_select=GO_DIRECTION_SELECT,
+    go_refine_passes=GO_REFINE_PASSES,
+    go_feat_subsample=GO_FEAT_SUBSAMPLE,
+
+    # Try GPU KMeans first, then fall back to CPU KMeans if needed
+    go_use_cpu_kmeans=False,
+    go_fallback_cpu_kmeans=True,
+
+    # NSC-pSP settings
+    nsc_segmentation=NSC_SEGMENTATION,
+    nsc_m_rule=NSC_M_RULE,
+    nsc_tau=NSC_TAU,
+    nsc_gamma=NSC_GAMMA,
+    nsc_beta=NSC_BETA,
+    nsc_M_min=NSC_MMIN,
+    nsc_M_max=NSC_MMAX,
+    nsc_l_min=NSC_LMIN,
+    assume_standardized=ASSUME_STANDARDIZED,
+
+    # TabPFN-2.5 head
+    tabpfn_seed=TABPFN_SEED,
+    device=DEVICE,
+
+    return_predictions=True,
+    verbose=False,
+)
+
+
+# -----------------------
+# Access outputs
+# -----------------------
+print(results["summary"])
+
+metrics_df = results["metrics_df"]
+predictions_df = results["predictions_df"]
+
+print("\nFold-wise metrics")
+print(metrics_df)
+
+print("\nPrediction preview")
+print(predictions_df.head())
+
+print("\nGO-LR ordering")
+print(f"Learned GO-LR order length: {len(results['ordering'])}")
+print("First 10 ordered features:")
+print(results["ordered_feature_names"][:10])
+
+
+# -----------------------
+# Final 5x5 CV summary
+# -----------------------
+r2s = metrics_df["r2"].to_numpy()
+rmses = metrics_df["rmse"].to_numpy()
+maes = metrics_df["mae"].to_numpy()
+
+print("\nFinal 5x5 CV results")
+print(f"R2   : {np.mean(r2s):.4f} ± {np.std(r2s, ddof=1):.4f}")
+print(f"RMSE : {np.mean(rmses):.4f} ± {np.std(rmses, ddof=1):.4f}")
+print(f"MAE  : {np.mean(maes):.4f} ± {np.std(maes, ddof=1):.4f}")
+```
+- The returned dictionary contains:
+```python
+results["summary"]                # text summary of the run
+results["metrics_df"]             # fold-wise R2, RMSE, MAE, and token count
+results["predictions_df"]         # per-fold regression predictions
+results["ordering"]               # learned GO-LR feature ordering
+results["ordered_feature_names"]   # ordered feature names
+results["num_features"]           # number of numeric input features
+results["num_samples"]            # number of samples
+```
 
 ### Example 10: GO-LR as an Ordering Metaheuristic
 
