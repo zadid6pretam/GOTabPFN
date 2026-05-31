@@ -1189,14 +1189,6 @@ def run_gotabpfn_csv(
 
         CSV -> preprocessing -> GO-LR ordering -> NSC-pSP compression -> TabPFN-2.5 head
 
-    This wrapper is designed to match the manual implementation style:
-      - full-feature GO-LR ordering once before CV by default
-      - GPU KMeans attempt with CPU fallback
-      - fold-wise NSC-pSP compression
-      - fold-wise TabPFN-2.5 head
-      - classification uses predict_proba(...) then argmax
-      - regression cv="5x5" uses RepeatedKFold(5, 5)
-
     Returns
     -------
     dict with:
@@ -1248,12 +1240,9 @@ def run_gotabpfn_csv(
     )
 
     if go_feat_subsample is None:
-        # Manual-equivalent path: learn GO-LR directly on full X.
         X_go = X
         feat_idx = None
     else:
-        # Optional feature subsampling path for very high-dimensional cases.
-        # This is not used by the validated Colon example.
         m_full = X.shape[1]
         rng = np.random.default_rng(seed + 999)
 
@@ -1423,46 +1412,34 @@ def run_gotabpfn_csv(
         if verbose:
             print(f"Fold {fold_id:02d} Z_tr shape: {Z_tr.shape}")
 
-        head = TabPFN25Head(head_cfg)
-        head.fit(Z_tr, y_tr)
+        # ------------------------------------------------------------
+        # Binary classification branch: separated to match manual script
+        # ------------------------------------------------------------
+        if task_type_final == "binary":
+            head = TabPFN25Head(head_cfg)
+            head.fit(Z_tr, y_tr)
 
-        if task_type_final in {"binary", "multiclass"}:
             P = head.predict_proba(Z_va)
             pred = np.argmax(P, axis=1)
 
-            acc = float(accuracy_score(y_va, pred))
-            f1m = float(f1_score(y_va, pred, average="macro"))
+            acc = accuracy_score(y_va, pred)
+            f1m = f1_score(y_va, pred, average="macro")
+            auc = roc_auc_score(y_va, P[:, 1])
 
             row = {
                 "fold": fold_id,
-                "accuracy": acc,
-                "macro_f1": f1m,
+                "accuracy": float(acc),
+                "macro_f1": float(f1m),
+                "auc": float(auc),
                 "nsc_tokens": Z_tr.shape[1],
             }
-
-            if task_type_final == "binary":
-                try:
-                    row["auc"] = float(roc_auc_score(y_va, P[:, 1]))
-                except Exception:
-                    row["auc"] = np.nan
-
-                if verbose:
-                    print(
-                        f"Fold {fold_id:02d}: "
-                        f"ACC={acc:.4f}, F1={f1m:.4f}, AUC={row['auc']:.4f}"
-                    )
-
-            else:
-                aucm = _safe_multiclass_macro_ovr_auc(y_va, P, int(num_classes))
-                row["macro_ovr_auc"] = aucm
-
-                if verbose:
-                    print(
-                        f"Fold {fold_id:02d}: "
-                        f"ACC={acc:.4f}, Macro-F1={f1m:.4f}, Macro-OvR-AUC={aucm:.4f}"
-                    )
-
             rows.append(row)
+
+            if verbose:
+                print(
+                    f"Fold {fold_id:02d}: "
+                    f"ACC={acc:.4f}, F1={f1m:.4f}, AUC={auc:.4f}"
+                )
 
             if return_predictions:
                 true_labels = (
@@ -1482,7 +1459,60 @@ def run_gotabpfn_csv(
                         "predicted_label": yp,
                     })
 
+        # ------------------------------------------------------------
+        # Multiclass classification branch
+        # ------------------------------------------------------------
+        elif task_type_final == "multiclass":
+            head = TabPFN25Head(head_cfg)
+            head.fit(Z_tr, y_tr)
+
+            P = head.predict_proba(Z_va)
+            pred = np.argmax(P, axis=1)
+
+            acc = float(accuracy_score(y_va, pred))
+            f1m = float(f1_score(y_va, pred, average="macro"))
+            aucm = _safe_multiclass_macro_ovr_auc(y_va, P, int(num_classes))
+
+            row = {
+                "fold": fold_id,
+                "accuracy": acc,
+                "macro_f1": f1m,
+                "macro_ovr_auc": aucm,
+                "nsc_tokens": Z_tr.shape[1],
+            }
+            rows.append(row)
+
+            if verbose:
+                print(
+                    f"Fold {fold_id:02d}: "
+                    f"ACC={acc:.4f}, Macro-F1={f1m:.4f}, Macro-OvR-AUC={aucm:.4f}"
+                )
+
+            if return_predictions:
+                true_labels = (
+                    label_encoder.inverse_transform(y_va)
+                    if label_encoder is not None else y_va
+                )
+                pred_labels = (
+                    label_encoder.inverse_transform(pred)
+                    if label_encoder is not None else pred
+                )
+
+                for idx, yt, yp in zip(va_idx, true_labels, pred_labels):
+                    pred_rows.append({
+                        "row_index": int(idx),
+                        "fold": int(fold_id),
+                        "true_label": yt,
+                        "predicted_label": yp,
+                    })
+
+        # ------------------------------------------------------------
+        # Regression branch
+        # ------------------------------------------------------------
         else:
+            head = TabPFN25Head(head_cfg)
+            head.fit(Z_tr, y_tr)
+
             pred = np.asarray(head.predict(Z_va), dtype=np.float32).reshape(-1)
 
             r2 = float(r2_score(y_va, pred))
