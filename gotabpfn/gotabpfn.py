@@ -969,12 +969,42 @@ class TabPFN25Head(nn.Module):
 # CSV-level GOTabPFN convenience wrapper
 # ============================================================
 
-from sklearn.model_selection import StratifiedKFold, RepeatedStratifiedKFold, KFold
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, r2_score, mean_squared_error, mean_absolute_error
-import pandas as pd
+import gc
+import random
+import time
 import numpy as np
+import pandas as pd
 import torch
+
+from sklearn.model_selection import (
+    RepeatedStratifiedKFold,
+    RepeatedKFold,
+    StratifiedKFold,
+    KFold,
+)
+from sklearn.preprocessing import StandardScaler, LabelEncoder, label_binarize
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    roc_auc_score,
+    r2_score,
+    mean_squared_error,
+    mean_absolute_error,
+)
+
+
+def _seed_everything_for_wrapper(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def _cleanup_cuda_for_wrapper():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def _compute_deltas_adjacent_corr_for_wrapper(X_tr, Pi_star, eps=1e-12):
@@ -982,7 +1012,7 @@ def _compute_deltas_adjacent_corr_for_wrapper(X_tr, Pi_star, eps=1e-12):
     Compute adjacent transition scores along the GO-LR order:
         delta_t = 1 - |corr(feature_t, feature_{t+1})|.
 
-    Used by transition-aware NSC segmentation rules:
+    Required for transition-aware NSC segmentation rules:
         - equal_mass
         - largest_jump
     """
@@ -1000,6 +1030,21 @@ def _compute_deltas_adjacent_corr_for_wrapper(X_tr, Pi_star, eps=1e-12):
     return deltas.cpu()
 
 
+def _safe_multiclass_macro_ovr_auc(y_true, proba, num_classes):
+    try:
+        y_bin = label_binarize(y_true, classes=np.arange(num_classes))
+        return float(
+            roc_auc_score(
+                y_bin,
+                proba,
+                average="macro",
+                multi_class="ovr",
+            )
+        )
+    except Exception:
+        return np.nan
+
+
 def _preprocess_csv_for_gotabpfn(
     csv_path,
     target_col,
@@ -1008,13 +1053,21 @@ def _preprocess_csv_for_gotabpfn(
     standardize=True,
 ):
     """
-    Basic preprocessing for CSV-level GOTabPFN wrapper.
+    Preprocess CSV exactly following the manual examples.
 
-    Parameters
-    ----------
-    non_numeric:
-        "drop"   : drop non-numeric feature columns.
-        "encode" : one-hot encode non-numeric feature columns.
+    Classification:
+      - y_raw = target as string, fill missing as "missing_target"
+      - LabelEncoder
+      - numeric features only by default
+      - median imputation + 0 fallback
+      - StandardScaler
+
+    Regression:
+      - target converted to numeric
+      - missing target filled with target median, matching manual DrivFace script
+      - numeric features only by default
+      - median imputation + 0 fallback
+      - StandardScaler
     """
     df = pd.read_csv(csv_path)
 
@@ -1041,8 +1094,10 @@ def _preprocess_csv_for_gotabpfn(
     task_type = str(task_type).lower()
 
     if task_type in {"binary", "multiclass", "classification"}:
+        y_raw = y_raw.astype(str).fillna("missing_target")
+
         le = LabelEncoder()
-        y = le.fit_transform(y_raw.astype(str).fillna("missing_target")).astype(np.int64)
+        y = le.fit_transform(y_raw).astype(np.int64)
         num_classes = len(le.classes_)
 
         if task_type == "classification":
@@ -1051,25 +1106,33 @@ def _preprocess_csv_for_gotabpfn(
             task_type_final = task_type
 
         if task_type_final == "binary" and num_classes != 2:
-            raise ValueError(f"Binary classification expected 2 classes, found {num_classes}.")
+            raise ValueError(
+                f"Binary classification expected 2 classes, found {num_classes}."
+            )
+
         if task_type_final == "multiclass" and num_classes < 2:
-            raise ValueError(f"Multiclass classification requires >=2 classes, found {num_classes}.")
+            raise ValueError(
+                f"Multiclass classification requires >=2 classes, found {num_classes}."
+            )
 
         label_encoder = le
 
     elif task_type == "regression":
-        y = pd.to_numeric(y_raw, errors="coerce").to_numpy(dtype=np.float32)
-        valid = ~np.isnan(y)
-        X_df = X_df.loc[valid]
-        y = y[valid]
+        y_raw = pd.to_numeric(y_raw, errors="coerce")
+        y_raw = y_raw.fillna(y_raw.median())
+        y = y_raw.to_numpy(dtype=np.float32)
+
         num_classes = None
         task_type_final = "regression"
         label_encoder = None
 
         if len(y) < 3:
-            raise ValueError("Regression requires at least 3 valid target values.")
+            raise ValueError("Regression requires at least 3 target values.")
+
     else:
-        raise ValueError("task_type must be one of: 'classification', 'binary', 'multiclass', 'regression'.")
+        raise ValueError(
+            "task_type must be one of: 'classification', 'binary', 'multiclass', 'regression'."
+        )
 
     X = X_df.to_numpy(dtype=np.float32)
 
@@ -1089,7 +1152,7 @@ def run_gotabpfn_csv(
 
     # Evaluation
     cv="5x5",
-    test_size=0.30,
+    test_size=0.30,  # kept for API compatibility; not used in manual-style CV
     seed=42,
 
     # GO-LR
@@ -1098,7 +1161,8 @@ def run_gotabpfn_csv(
     go_refine=True,
     go_direction_select=True,
     go_refine_passes=1,
-    go_use_cpu_kmeans=True,
+    go_use_cpu_kmeans=False,
+    go_fallback_cpu_kmeans=True,
 
     # NSC-pSP
     nsc_segmentation="uniform",
@@ -1117,14 +1181,20 @@ def run_gotabpfn_csv(
 
     # Output
     return_predictions=True,
+    verbose=True,
 ):
     """
     Run the full GOTabPFN CSV pipeline:
 
         CSV -> preprocessing -> GO-LR ordering -> NSC-pSP compression -> TabPFN-2.5 head
 
-    This is a convenience wrapper for quickstart examples, Hugging Face Spaces,
-    and users who want a single-call CSV interface.
+    This wrapper is designed to match the manual implementation style:
+      - full-feature GO-LR ordering once before CV
+      - GPU KMeans attempt with CPU fallback
+      - fold-wise NSC-pSP compression
+      - fold-wise TabPFN-2.5 head
+      - classification uses predict_proba(...) then argmax
+      - regression cv="5x5" uses RepeatedKFold(5, 5)
 
     Returns
     -------
@@ -1137,22 +1207,36 @@ def run_gotabpfn_csv(
         - task_type
         - num_features
         - num_samples
+        - elapsed_time_sec
     """
+    _seed_everything_for_wrapper(seed)
+
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    X, y, feature_names, label_encoder, scaler, task_type_final, num_classes = _preprocess_csv_for_gotabpfn(
-        csv_path=csv_path,
-        target_col=target_col,
-        task_type=task_type,
-        non_numeric=non_numeric,
-        standardize=True,
+    t0 = time.perf_counter()
+
+    X, y, feature_names, label_encoder, scaler, task_type_final, num_classes = (
+        _preprocess_csv_for_gotabpfn(
+            csv_path=csv_path,
+            target_col=target_col,
+            task_type=task_type,
+            non_numeric=non_numeric,
+            standardize=True,
+        )
     )
 
     n, m = X.shape
 
+    if verbose:
+        if task_type_final in {"binary", "multiclass"}:
+            print(f"X shape: {X.shape}, classes: {num_classes}")
+        else:
+            print(f"X shape: {X.shape}, y shape: {y.shape}")
+        print(f"Using device: {device}")
+
     # -----------------------
-    # Learn GO-LR once
+    # Learn GO-LR feature ordering once on FULL feature set
     # -----------------------
     go = GraphFeatureOrdering(
         num_clusters=go_num_clusters,
@@ -1162,15 +1246,39 @@ def run_gotabpfn_csv(
         refine_passes=go_refine_passes,
     )
 
-    Pi_star, local_orderings, graphs, centroids = go.fit(
-        X,
-        seed=seed,
-        deterministic=True,
-        use_cpu_kmeans=go_use_cpu_kmeans,
-    )
+    if go_fallback_cpu_kmeans and not go_use_cpu_kmeans:
+        try:
+            Pi_star, local_orderings, graphs, centroids = go.fit(
+                X,
+                seed=seed,
+                deterministic=True,
+                use_cpu_kmeans=False,
+            )
+            golr_kmeans_mode = "gpu"
+        except Exception:
+            _cleanup_cuda_for_wrapper()
+            Pi_star, local_orderings, graphs, centroids = go.fit(
+                X,
+                seed=seed,
+                deterministic=True,
+                use_cpu_kmeans=True,
+            )
+            golr_kmeans_mode = "cpu_fallback"
+    else:
+        Pi_star, local_orderings, graphs, centroids = go.fit(
+            X,
+            seed=seed,
+            deterministic=True,
+            use_cpu_kmeans=go_use_cpu_kmeans,
+        )
+        golr_kmeans_mode = "cpu" if go_use_cpu_kmeans else "gpu"
 
     Pi_star = list(map(int, Pi_star))
     ordered_feature_names = [feature_names[i] for i in Pi_star]
+
+    if verbose:
+        print(f"Learned GO-LR order length: {len(Pi_star)}")
+        print(f"GO-LR KMeans mode: {golr_kmeans_mode}")
 
     # -----------------------
     # CV setup
@@ -1207,23 +1315,40 @@ def run_gotabpfn_csv(
             task_type=task_type_final,
             num_classes=int(num_classes),
             device=device,
-            random_state=tabpfn_seed,
+            random_state=int(tabpfn_seed),
         )
 
     else:
-        if cv in {"3fold", "3-fold", "3"}:
-            splitter = KFold(n_splits=3, shuffle=True, random_state=seed)
+        if cv == "5x5":
+            splitter = RepeatedKFold(
+                n_splits=5,
+                n_repeats=5,
+                random_state=seed,
+            )
+            split_iter = splitter.split(X)
+            eval_name = "5x5 repeated CV"
+        elif cv in {"3fold", "3-fold", "3"}:
+            splitter = KFold(
+                n_splits=3,
+                shuffle=True,
+                random_state=seed,
+            )
+            split_iter = splitter.split(X)
             eval_name = "3-fold CV"
         else:
-            splitter = KFold(n_splits=5, shuffle=True, random_state=seed)
+            splitter = KFold(
+                n_splits=5,
+                shuffle=True,
+                random_state=seed,
+            )
+            split_iter = splitter.split(X)
             eval_name = "5-fold CV"
 
-        split_iter = splitter.split(X)
         head_cfg = TabPFN25Config(
             task_type="regression",
-            num_classes=0,
+            num_classes=1,
             device=device,
-            random_state=tabpfn_seed,
+            random_state=int(tabpfn_seed),
         )
 
     # -----------------------
@@ -1238,14 +1363,14 @@ def run_gotabpfn_csv(
 
         nsc = pidf_segpca(
             segmentation=nsc_segmentation,
-            l_min=nsc_l_min,
+            l_min=int(nsc_l_min),
             m_rule=nsc_m_rule,
-            gamma=nsc_gamma,
-            beta=nsc_beta,
-            tau=nsc_tau,
-            M_min=nsc_M_min,
-            M_max=nsc_M_max,
-            assume_standardized=assume_standardized,
+            gamma=float(nsc_gamma),
+            beta=float(nsc_beta),
+            tau=float(nsc_tau),
+            M_min=int(nsc_M_min),
+            M_max=int(nsc_M_max),
+            assume_standardized=bool(assume_standardized),
             device=device,
         )
 
@@ -1253,41 +1378,56 @@ def run_gotabpfn_csv(
         if str(nsc_segmentation).lower() in {"equal_mass", "largest_jump"}:
             deltas = _compute_deltas_adjacent_corr_for_wrapper(X_tr, Pi_star)
 
-        X_tr_t = torch.from_numpy(X_tr).float()
-        X_va_t = torch.from_numpy(X_va).float()
+        X_tr_t = torch.from_numpy(X_tr)
 
         nsc.configure(
             Pi_star=Pi_star,
             X_train=X_tr_t,
-            tau=nsc_tau,
+            tau=float(nsc_tau),
             deltas=deltas,
         )
 
         Z_tr = nsc.compress(X_tr_t, mode="flatten").cpu().numpy()
-        Z_va = nsc.compress(X_va_t, mode="flatten").cpu().numpy()
+        Z_va = nsc.compress(torch.from_numpy(X_va), mode="flatten").cpu().numpy()
 
         head = TabPFN25Head(head_cfg)
         head.fit(Z_tr, y_tr)
 
         if task_type_final in {"binary", "multiclass"}:
-            pred = head.predict(Z_va)
-            acc = accuracy_score(y_va, pred)
-            f1 = f1_score(y_va, pred, average="macro", zero_division=0)
+            P = head.predict_proba(Z_va)
+            pred = np.argmax(P, axis=1)
+
+            acc = float(accuracy_score(y_va, pred))
+            f1m = float(f1_score(y_va, pred, average="macro", zero_division=0))
 
             row = {
                 "fold": fold_id,
                 "accuracy": acc,
-                "macro_f1": f1,
+                "macro_f1": f1m,
                 "nsc_tokens": Z_tr.shape[1],
             }
 
             if task_type_final == "binary":
                 try:
-                    P = head.predict_proba(Z_va)
-                    auc = roc_auc_score(y_va, P[:, 1])
-                    row["auc"] = auc
+                    row["auc"] = float(roc_auc_score(y_va, P[:, 1]))
                 except Exception:
                     row["auc"] = np.nan
+
+                if verbose:
+                    print(
+                        f"Fold {fold_id:02d}: "
+                        f"ACC={acc:.4f}, F1={f1m:.4f}, AUC={row['auc']:.4f}"
+                    )
+
+            else:
+                aucm = _safe_multiclass_macro_ovr_auc(y_va, P, int(num_classes))
+                row["macro_ovr_auc"] = aucm
+
+                if verbose:
+                    print(
+                        f"Fold {fold_id:02d}: "
+                        f"ACC={acc:.4f}, Macro-F1={f1m:.4f}, Macro-OvR-AUC={aucm:.4f}"
+                    )
 
             rows.append(row)
 
@@ -1304,36 +1444,47 @@ def run_gotabpfn_csv(
                 for idx, yt, yp in zip(va_idx, true_labels, pred_labels):
                     pred_rows.append({
                         "row_index": int(idx),
-                        "fold": fold_id,
+                        "fold": int(fold_id),
                         "true_label": yt,
                         "predicted_label": yp,
                     })
 
         else:
-            pred = head.predict(Z_va)
+            pred = np.asarray(head.predict(Z_va), dtype=np.float32).reshape(-1)
+
+            r2 = float(r2_score(y_va, pred))
             rmse = float(np.sqrt(mean_squared_error(y_va, pred)))
             mae = float(mean_absolute_error(y_va, pred))
-            r2 = float(r2_score(y_va, pred))
 
-            rows.append({
+            row = {
                 "fold": fold_id,
+                "r2": r2,
                 "rmse": rmse,
                 "mae": mae,
-                "r2": r2,
                 "nsc_tokens": Z_tr.shape[1],
-            })
+            }
+            rows.append(row)
+
+            if verbose:
+                print(
+                    f"Fold {fold_id:02d}: "
+                    f"R2={r2:.4f}, RMSE={rmse:.4f}, MAE={mae:.4f}"
+                )
 
             if return_predictions:
                 for idx, yt, yp in zip(va_idx, y_va, pred):
                     pred_rows.append({
                         "row_index": int(idx),
-                        "fold": fold_id,
+                        "fold": int(fold_id),
                         "true_value": float(yt),
                         "predicted_value": float(yp),
                     })
 
+        _cleanup_cuda_for_wrapper()
+
     metrics_df = pd.DataFrame(rows)
     predictions_df = pd.DataFrame(pred_rows)
+    elapsed_time_sec = time.perf_counter() - t0
 
     # -----------------------
     # Summary
@@ -1346,9 +1497,11 @@ def run_gotabpfn_csv(
         f"Samples: {n}",
         f"Original numeric features: {m}",
         f"GO-LR metric: {go_metric}",
+        f"GO-LR KMeans mode: {golr_kmeans_mode}",
         f"NSC segmentation: {nsc_segmentation}",
         f"NSC M rule: {nsc_m_rule}",
         f"Device: {device}",
+        f"Elapsed time: {elapsed_time_sec:.2f} seconds",
         "",
         "Metric summary:",
     ]
@@ -1357,9 +1510,17 @@ def run_gotabpfn_csv(
         if col == "fold":
             continue
         if pd.api.types.is_numeric_dtype(metrics_df[col]):
+            values = metrics_df[col].dropna().to_numpy()
+            if len(values) == 0:
+                continue
             summary_lines.append(
-                f"{col}: {metrics_df[col].mean():.4f} ± {metrics_df[col].std(ddof=1):.4f}"
+                f"{col}: {np.mean(values):.4f} ± {np.std(values, ddof=1):.4f}"
             )
+
+    if verbose:
+        print("\nFinal CV results")
+        for line in summary_lines:
+            print(line)
 
     return {
         "summary": "\n".join(summary_lines),
@@ -1370,4 +1531,6 @@ def run_gotabpfn_csv(
         "task_type": task_type_final,
         "num_features": m,
         "num_samples": n,
+        "elapsed_time_sec": elapsed_time_sec,
+        "golr_kmeans_mode": golr_kmeans_mode,
     }
