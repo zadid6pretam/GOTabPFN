@@ -1163,6 +1163,7 @@ def run_gotabpfn_csv(
     go_refine_passes=1,
     go_use_cpu_kmeans=False,
     go_fallback_cpu_kmeans=True,
+    go_feat_subsample=None,
 
     # NSC-pSP
     nsc_segmentation="uniform",
@@ -1236,49 +1237,65 @@ def run_gotabpfn_csv(
         print(f"Using device: {device}")
 
     # -----------------------
-    # Learn GO-LR feature ordering once on FULL feature set
-    # -----------------------
-    go = GraphFeatureOrdering(
-        num_clusters=go_num_clusters,
-        metric=go_metric,
-        refine=go_refine,
-        direction_select=go_direction_select,
-        refine_passes=go_refine_passes,
-    )
+# Learn GO-LR feature ordering once
+# -----------------------
+m_full = X.shape[1]
 
-    if go_fallback_cpu_kmeans and not go_use_cpu_kmeans:
-        try:
-            Pi_star, local_orderings, graphs, centroids = go.fit(
-                X,
-                seed=seed,
-                deterministic=True,
-                use_cpu_kmeans=False,
-            )
-            golr_kmeans_mode = "gpu"
-        except Exception:
-            _cleanup_cuda_for_wrapper()
-            Pi_star, local_orderings, graphs, centroids = go.fit(
-                X,
-                seed=seed,
-                deterministic=True,
-                use_cpu_kmeans=True,
-            )
-            golr_kmeans_mode = "cpu_fallback"
-    else:
-        Pi_star, local_orderings, graphs, centroids = go.fit(
-            X,
+rng = np.random.default_rng(seed + 999)
+
+if go_feat_subsample is not None and int(go_feat_subsample) < m_full:
+    feat_idx = rng.choice(m_full, size=int(go_feat_subsample), replace=False)
+    feat_idx.sort()
+else:
+    feat_idx = np.arange(m_full)
+
+X_go = X[:, feat_idx]
+
+go = GraphFeatureOrdering(
+    num_clusters=go_num_clusters,
+    metric=go_metric,
+    refine=go_refine,
+    direction_select=go_direction_select,
+    refine_passes=go_refine_passes,
+)
+
+if go_fallback_cpu_kmeans and not go_use_cpu_kmeans:
+    try:
+        Pi_sub, local_orderings, graphs, centroids = go.fit(
+            X_go,
             seed=seed,
             deterministic=True,
-            use_cpu_kmeans=go_use_cpu_kmeans,
+            use_cpu_kmeans=False,
         )
-        golr_kmeans_mode = "cpu" if go_use_cpu_kmeans else "gpu"
+        golr_kmeans_mode = "gpu"
+    except Exception:
+        _cleanup_cuda_for_wrapper()
+        Pi_sub, local_orderings, graphs, centroids = go.fit(
+            X_go,
+            seed=seed,
+            deterministic=True,
+            use_cpu_kmeans=True,
+        )
+        golr_kmeans_mode = "cpu_fallback"
+else:
+    Pi_sub, local_orderings, graphs, centroids = go.fit(
+        X_go,
+        seed=seed,
+        deterministic=True,
+        use_cpu_kmeans=go_use_cpu_kmeans,
+    )
+    golr_kmeans_mode = "cpu" if go_use_cpu_kmeans else "gpu"
 
-    Pi_star = list(map(int, Pi_star))
-    ordered_feature_names = [feature_names[i] for i in Pi_star]
+ordered_subset = feat_idx[np.array(Pi_sub, dtype=np.int64)].tolist()
 
-    if verbose:
-        print(f"Learned GO-LR order length: {len(Pi_star)}")
-        print(f"GO-LR KMeans mode: {golr_kmeans_mode}")
+if len(feat_idx) < m_full:
+    remaining = np.setdiff1d(np.arange(m_full), feat_idx, assume_unique=False)
+    Pi_star = ordered_subset + remaining.tolist()
+else:
+    Pi_star = ordered_subset
+
+Pi_star = list(map(int, Pi_star))
+ordered_feature_names = [feature_names[i] for i in Pi_star]
 
     # -----------------------
     # CV setup
@@ -1498,6 +1515,7 @@ def run_gotabpfn_csv(
         f"Original numeric features: {m}",
         f"GO-LR metric: {go_metric}",
         f"GO-LR KMeans mode: {golr_kmeans_mode}",
+        f"GO-LR feature subsample: {go_feat_subsample if go_feat_subsample is not None else 'full'}",
         f"NSC segmentation: {nsc_segmentation}",
         f"NSC M rule: {nsc_m_rule}",
         f"Device: {device}",
