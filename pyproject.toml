@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gotabpfn"
-version = "0.1.10"
+version = "0.1.11"
 description = "GOTabPFN: From Feature Ordering to Compact Tokenization for Tabular Foundation Models on High-Dimensional Data"
 readme = "README.md"
 requires-python = ">=3.10"
