@@ -1018,8 +1018,135 @@ for t in study.trials:
     if reason is not None:
         print(f"Trial {t.number}: {reason}")
 ```
+### Example 3: Binary Classification with the single wrapper
 
-### Example 3: Multiclass Classification with Fixed GOTabPFN Hyperparameters
+The easiest way to run the full GOTabPFN pipeline on a CSV dataset is to use the high-level `run_gotabpfn_csv` wrapper. This example runs GOTabPFN on the Colon dataset for binary classification using GO-LR feature ordering, NSC-pSP compression, and the TabPFN-2.5 prediction head.
+
+```python
+import numpy as np
+import torch
+
+from gotabpfn import run_gotabpfn_csv
+
+
+# -----------------------
+# User settings
+# -----------------------
+DATA_FILE = "coloncancer_encoded.csv"  # change this to your dataset file name
+TARGET_COL = "label"                   # change this to your target column
+SEED = 42
+
+# Fixed GO-LR hyperparameters
+GO_METRIC = "euclidean"
+GO_NUM_CLUSTERS = 10
+GO_REFINE_PASSES = 3
+GO_DIRECTION_SELECT = True
+
+# Fixed NSC-pSP hyperparameters
+NSC_SEGMENTATION = "equal_mass"
+NSC_M_RULE = "idf"
+NSC_TAU = 0.99
+NSC_GAMMA = 1.7570143129240916
+NSC_BETA = 0.2244046472232107
+NSC_MMIN = 64
+NSC_MMAX = 384
+NSC_LMIN = 16
+ASSUME_STANDARDIZED = False
+
+TABPFN_SEED = 42
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# -----------------------
+# Run GOTabPFN
+# -----------------------
+results = run_gotabpfn_csv(
+    csv_path=DATA_FILE,
+    target_col=TARGET_COL,
+    task_type="binary",
+    non_numeric="drop",
+
+    # 5x5 repeated stratified cross-validation
+    cv="5x5",
+    seed=SEED,
+
+    # GO-LR settings
+    go_metric=GO_METRIC,
+    go_num_clusters=GO_NUM_CLUSTERS,
+    go_refine=True,
+    go_direction_select=GO_DIRECTION_SELECT,
+    go_refine_passes=GO_REFINE_PASSES,
+
+    # Try GPU KMeans first, then fall back to CPU KMeans if needed
+    go_use_cpu_kmeans=False,
+    go_fallback_cpu_kmeans=True,
+
+    # NSC-pSP settings
+    nsc_segmentation=NSC_SEGMENTATION,
+    nsc_m_rule=NSC_M_RULE,
+    nsc_tau=NSC_TAU,
+    nsc_gamma=NSC_GAMMA,
+    nsc_beta=NSC_BETA,
+    nsc_M_min=NSC_MMIN,
+    nsc_M_max=NSC_MMAX,
+    nsc_l_min=NSC_LMIN,
+    assume_standardized=ASSUME_STANDARDIZED,
+
+    # TabPFN-2.5 head
+    tabpfn_seed=TABPFN_SEED,
+    device=DEVICE,
+
+    return_predictions=True,
+    verbose=False,
+)
+
+
+# -----------------------
+# Access outputs
+# -----------------------
+print(results["summary"])
+
+metrics_df = results["metrics_df"]
+predictions_df = results["predictions_df"]
+
+print("\nFold-wise metrics")
+print(metrics_df)
+
+print("\nPrediction preview")
+print(predictions_df.head())
+
+print("\nGO-LR ordering")
+print(f"Learned GO-LR order length: {len(results['ordering'])}")
+print("First 10 ordered features:")
+print(results["ordered_feature_names"][:10])
+
+
+# -----------------------
+# Final 5x5 CV summary
+# -----------------------
+accs = metrics_df["accuracy"].to_numpy()
+f1s = metrics_df["macro_f1"].to_numpy()
+aucs = metrics_df["auc"].dropna().to_numpy()
+
+print("\nFinal 5x5 CV results")
+print(f"Accuracy : {np.mean(accs):.4f} ± {np.std(accs, ddof=1):.4f}")
+print(f"Macro-F1 : {np.mean(f1s):.4f} ± {np.std(f1s, ddof=1):.4f}")
+print(f"AUC      : {np.mean(aucs):.4f} ± {np.std(aucs, ddof=1):.4f}")
+```
+- The returned dictionary contains:
+```python
+results["summary"]                # text summary of the run
+results["metrics_df"]             # fold-wise accuracy, macro-F1, AUC, and token count
+results["predictions_df"]         # per-fold predictions
+results["ordering"]               # learned GO-LR feature ordering
+results["ordered_feature_names"]   # ordered feature names
+results["num_features"]           # number of numeric input features
+results["num_samples"]            # number of samples
+```
+- For this example, NSC-pSP compresses the original feature vector into a smaller number of structured meta-features before applying the TabPFN-2.5 head. For instance, if nsc_tokens = 64, then the original feature vector is compressed into 64 NSC meta-features/tokens for each sample.
+
+
+### Example 4: Multiclass Classification with Fixed GOTabPFN Hyperparameters
 
 This example runs GOTabPFN on a multiclass CSV dataset using fixed GO-LR and NSC-pSP hyperparameters.
 
@@ -1252,7 +1379,7 @@ print(f"Elapsed time  : {time.perf_counter() - t0:.2f} seconds")
 ```
 
 
-### Example 4: Multiclass Classification with Optuna Hyperparameter Tuning
+### Example 5: Multiclass Classification with Optuna Hyperparameter Tuning
 
 This example tunes GOTabPFN hyperparameters for a multiclass classification dataset. For each trial, GO-LR learns one feature ordering, then NSC-pSP and the frozen TabPFN-2.5 head are evaluated using repeated stratified cross-validation.
 
@@ -1529,8 +1656,144 @@ for key, value in study.best_params.items():
     print(f"{key}: {value}")
 ```
 
+### Example 6: Multiclass Classification with the single wrapper
 
-### Example 5: Regression with Fixed GOTabPFN Hyperparameters
+This example runs GOTabPFN on the ORL face dataset (`orlraws10P`) for multiclass classification using the high-level `run_gotabpfn_csv` wrapper. The pipeline performs GO-LR feature ordering, NSC-pSP compression, and TabPFN-2.5 prediction under 5×5 repeated stratified cross-validation.
+
+```python
+import numpy as np
+import torch
+
+from gotabpfn import run_gotabpfn_csv
+
+
+# -----------------------
+# User settings
+# -----------------------
+DATA_FILE = "orlraws10P.csv"  # change this to your dataset file name
+TARGET_COL = "label"          # change this to your target column
+SEED = 42
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# -----------------------
+# Fixed GO-LR hyperparameters
+# -----------------------
+GO_METRIC = "cosine"
+GO_NUM_CLUSTERS = 5
+GO_REFINE_PASSES = 1
+GO_DIRECTION_SELECT = False
+
+
+# -----------------------
+# Fixed NSC-pSP hyperparameters
+# -----------------------
+NSC_SEGMENTATION = "uniform"
+NSC_M_RULE = "default"
+NSC_TAU = 0.99
+NSC_GAMMA = 2.049512863264476
+NSC_BETA = 0.3887505167779042
+NSC_MMIN = 32
+NSC_MMAX = 384
+NSC_LMIN = 12
+ASSUME_STANDARDIZED = False
+
+TABPFN_SEED = 42
+
+
+# -----------------------
+# Run GOTabPFN
+# -----------------------
+results = run_gotabpfn_csv(
+    csv_path=DATA_FILE,
+    target_col=TARGET_COL,
+    task_type="multiclass",
+    non_numeric="drop",
+
+    # 5x5 repeated stratified cross-validation
+    cv="5x5",
+    seed=SEED,
+
+    # GO-LR settings
+    go_metric=GO_METRIC,
+    go_num_clusters=GO_NUM_CLUSTERS,
+    go_refine=True,
+    go_direction_select=GO_DIRECTION_SELECT,
+    go_refine_passes=GO_REFINE_PASSES,
+
+    # Try GPU KMeans first, then fall back to CPU KMeans if needed
+    go_use_cpu_kmeans=False,
+    go_fallback_cpu_kmeans=True,
+
+    # NSC-pSP settings
+    nsc_segmentation=NSC_SEGMENTATION,
+    nsc_m_rule=NSC_M_RULE,
+    nsc_tau=NSC_TAU,
+    nsc_gamma=NSC_GAMMA,
+    nsc_beta=NSC_BETA,
+    nsc_M_min=NSC_MMIN,
+    nsc_M_max=NSC_MMAX,
+    nsc_l_min=NSC_LMIN,
+    assume_standardized=ASSUME_STANDARDIZED,
+
+    # TabPFN-2.5 head
+    tabpfn_seed=TABPFN_SEED,
+    device=DEVICE,
+
+    return_predictions=True,
+    verbose=False,
+)
+
+
+# -----------------------
+# Access outputs
+# -----------------------
+print(results["summary"])
+
+metrics_df = results["metrics_df"]
+predictions_df = results["predictions_df"]
+
+print("\nFold-wise metrics")
+print(metrics_df)
+
+print("\nPrediction preview")
+print(predictions_df.head())
+
+print("\nGO-LR ordering")
+print(f"Learned GO-LR order length: {len(results['ordering'])}")
+print("First 10 ordered features:")
+print(results["ordered_feature_names"][:10])
+
+
+# -----------------------
+# Final 5x5 CV summary
+# -----------------------
+accs = metrics_df["accuracy"].to_numpy()
+f1s = metrics_df["macro_f1"].to_numpy()
+
+print("\nFinal 5x5 CV results")
+print(f"Accuracy      : {np.mean(accs):.4f} ± {np.std(accs, ddof=1):.4f}")
+print(f"Macro-F1      : {np.mean(f1s):.4f} ± {np.std(f1s, ddof=1):.4f}")
+
+if "macro_ovr_auc" in metrics_df.columns:
+    aucs = metrics_df["macro_ovr_auc"].dropna().to_numpy()
+    if len(aucs) > 0:
+        print(f"Macro-OvR-AUC : {np.mean(aucs):.4f} ± {np.std(aucs, ddof=1):.4f}")
+```
+- The returned dictionary contains:
+```python
+results["summary"]                # text summary of the run
+results["metrics_df"]             # fold-wise accuracy, macro-F1, macro-OvR-AUC, and token count
+results["predictions_df"]         # per-fold predictions
+results["ordering"]               # learned GO-LR feature ordering
+results["ordered_feature_names"]   # ordered feature names
+results["num_features"]           # number of numeric input features
+results["num_samples"]            # number of samples
+```
+
+
+### Example 7: Regression with Fixed GOTabPFN Hyperparameters
 
 This example runs GOTabPFN on a regression CSV dataset using fixed GO-LR and NSC-pSP hyperparameters. The target column should contain continuous numeric values.
 
@@ -1759,7 +2022,7 @@ print(f"MAE  : {np.mean(maes):.4f} ± {np.std(maes, ddof=1):.4f}")
 print(f"Elapsed time: {time.perf_counter() - t0:.2f} seconds")
 ```
 
-### Example 6: Regression with Optuna Hyperparameter Tuning
+### Example 8: Regression with Optuna Hyperparameter Tuning
 
 This example tunes GOTabPFN hyperparameters for a regression dataset. For each trial, GO-LR learns one feature ordering, then NSC-pSP and the frozen TabPFN-2.5 regression head are evaluated using repeated cross-validation.
 
@@ -2035,7 +2298,9 @@ for key, value in study.best_params.items():
     print(f"{key}: {value}")
 ```
 
-### Example 7: GO-LR as an Ordering Metaheuristic
+
+
+### Example 10: GO-LR as an Ordering Metaheuristic
 
 This example uses **GO-LR alone** as a feature ordering metaheuristic. Instead of running the full GOTabPFN pipeline, it tests the ordering module directly and reports ordering runtime, TSP-path cost, MinLA-style dispersion cost, the learned feature order, and the reordered feature table.
 
@@ -2192,7 +2457,7 @@ Expected saved outputs:
 
 In this example, GO-LR is used as a standalone ordering metaheuristic. It constructs a graph over features, initializes an ordering using a TSP path-style heuristic, and then refines the order under a MinLA-style dispersion objective. Lower TSP-path and MinLA costs indicate stronger ordering quality under the corresponding surrogate criteria.
 
-### Example 8: Checking NSC Compression Variants
+### Example 11: Checking NSC Compression Variants
 
 This example tests the four NSC compression variants implemented in GOTabPFN:
 
@@ -2547,7 +2812,7 @@ Expected saved outputs:
 
 This example is intended for checking the compression stage independently for final prediction. It helps verify that GO-LR ordering can be reused by different NSC variants and that high-dimensional feature matrices can be converted into compact meta-feature representations before downstream modeling.
 
-### Example 9: Multiple-Dataset Ordering Diagnostics
+### Example 12: Multiple-Dataset Ordering Diagnostics
 
 This example runs GOTabPFN's dataset diagnostic utility on multiple CSV files. It computes high-dimensionality and ordering-related diagnostics such as feature-to-sample ratio, intrinsic dimensionality factor, feature ordering effectiveness score, locality/enrichment scores, and related metrics. The example first creates a few dummy high-dimensional CSV datasets so the code can be tested immediately. To use your own datasets, replace the `datasets` list with your CSV file paths, target columns, and dataset names.
 
@@ -2902,7 +3167,7 @@ datasets = [
 
 The diagnostics automatically drop the target column and any non-numeric feature columns before computing ordering-related metrics.
 
-### Example 10: Single-Dataset Ordering Diagnostics
+### Example 13: Single-Dataset Ordering Diagnostics
 
 This example runs GOTabPFN's dataset-diagnostic utility on one CSV file. It computes high-dimensionality and ordering-related diagnostics such as feature-to-sample ratio, intrinsic dimensionality factor, feature ordering effectiveness score, locality/enrichment scores, and related metrics. The example first creates a dummy high-dimensional CSV dataset so the code can be tested immediately. To use your own dataset, change only the `DATA_FILE`, `TARGET_COL`, and `DATASET_NAME` variables.
 
