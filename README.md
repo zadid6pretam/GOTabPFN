@@ -54,7 +54,7 @@ BibTeX:
 
 - **Find it on ICML portal:** https://icml.cc/virtual/2026/poster/62523
 - **Project Webpage:** https://www.zadidhabib.com/gotabpfn.html
-- **Hugging Face Space:** [ZeroGPU Live Demo](https://zadid6pretam-GOTabPFN.hf.space) | [CPU Backup Demo](https://huggingface.co/spaces/zadid6pretam/GOTabPFN_CPU) | [ZeroGPU Space Repository](https://huggingface.co/spaces/zadid6pretam/GOTabPFN)
+- **Hugging Face Space:** [ZeroGPU Live Demo](https://zadid6pretam-GOTabPFN.hf.space) *(recommended; faster GPU-backed testing)* | [CPU Backup Demo](https://zadid6pretam-GOTabPFN-CPU.hf.space) *(use if ZeroGPU is unavailable)* | [ZeroGPU Space Repository](https://huggingface.co/spaces/zadid6pretam/GOTabPFN) | [CPU Backup Space Repository](https://huggingface.co/spaces/zadid6pretam/GOTabPFN_CPU)
 
 ## Files and Repository Structure
 
