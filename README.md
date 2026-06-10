@@ -77,9 +77,6 @@ This folder contains the core GOTabPFN implementation and standalone utility mod
 
 ### Experiment notebooks: `GOTabPFN Experiments/`
 
-**Since May 30, 2026, all Jupyter notebook previews are failing with "An error occurred" message. This affects both my own notebooks and others' repositories. Using nbformat v5.10.4 and nbconvert v7.17.1. Notebooks are valid and working locally. This appears to be a GitHub-side rendering issue.**
-- See: https://github.com/orgs/community/discussions/197350
-
 This folder contains experiment notebooks used during the initial submission and rebuttal/ablation period. Some notebooks may reflect earlier package/module names or earlier experimental scripts, but they are retained for reproducibility and transparency. Some notebooks contain full Optuna tuning scripts, while others provide fixed-run scripts using the best GO-LR and NSC hyperparameters found after Optuna search.
 
 Representative notebooks include:
