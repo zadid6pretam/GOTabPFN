@@ -3599,7 +3599,7 @@ This work was supported in part by the U.S. National Science Foundation under Aw
 
 ### iSyncTab (ECCV 2026)
 
-Our neural synchrony-based cross-modal feature sequencing framework for multimodal learning with image and tabular data. iSyncTab addresses the image–tabular integration problem by aligning and sequencing cross-modal feature groups before structured multimodal representation learning.
+Our neural synchrony-based cross-modal feature sequencing framework for multimodal learning with image and tabular data. iSyncTab addresses the image-tabular integration problem by aligning and sequencing cross-modal feature groups before structured multimodal representation learning.
 
 - **iSyncTab: Learning Cross-Modal Feature Sequencing for Image-Tabular Data via Neural Synchrony**  
 - Accepted at the European Conference on Computer Vision (ECCV 2026)
