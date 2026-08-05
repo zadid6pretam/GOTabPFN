@@ -3715,7 +3715,7 @@ This repository corresponds to our separate collaborative work on tabular remote
 - **ZAYAN: Disentangled Contrastive Transformer for Tabular Remote Sensing Data**
 
 - GitHub: https://github.com/zadid6pretam/ZAYAN
-
+- Paper: https://link.springer.com/chapter/10.1007/978-3-032-31397-3_1
 - arXiv: https://arxiv.org/abs/2604.27606
 
 ```bibtex
